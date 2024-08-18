@@ -1,0 +1,1218 @@
+<html>
+<head>
+<title>random_forest_no_parameters.ipynb</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<style type="text/css">
+.s0 { color: #61c6c6;}
+.s1 { color: #cc8b60;}
+.s2 { color: #d8d8d8;}
+.s3 { color: #cc7832;}
+.s4 { color: #bbb55b;}
+.s5 { color: #96bf7d;}
+.s6 { color: #d7539b; font-weight: bold;}
+</style>
+</head>
+<body bgcolor="#1a1a25">
+<table CELLSPACING=0 CELLPADDING=5 COLS=1 WIDTH="100%" BGCOLOR="#606060" >
+<tr><td><center>
+<font face="Arial, Helvetica" color="#000000">
+random_forest_no_parameters.ipynb</font>
+</center></td></tr></table>
+<pre><span class="s0">#%% 
+</span><span class="s1">import </span><span class="s2">copy</span>
+
+<span class="s1">import </span><span class="s2">numpy </span><span class="s1">as </span><span class="s2">np</span>
+<span class="s1">import </span><span class="s2">pandas </span><span class="s1">as </span><span class="s2">pd</span>
+<span class="s1">import </span><span class="s2">rasterio</span>
+<span class="s1">from </span><span class="s2">rasterio.windows </span><span class="s1">import </span><span class="s2">from_bounds</span>
+<span class="s1">from </span><span class="s2">sklearn.ensemble </span><span class="s1">import </span><span class="s2">RandomForestRegressor</span>
+<span class="s1">from </span><span class="s2">sklearn.metrics </span><span class="s1">import </span><span class="s2">mean_squared_error</span><span class="s3">, </span><span class="s2">r2_score</span><span class="s3">, </span><span class="s2">mean_absolute_error</span><span class="s3">, </span><span class="s2">mean_absolute_percentage_error</span>
+<span class="s1">from </span><span class="s2">skopt </span><span class="s1">import </span><span class="s2">BayesSearchCV</span>
+<span class="s1">from </span><span class="s2">skopt.space </span><span class="s1">import </span><span class="s2">Categorical</span><span class="s3">, </span><span class="s2">Integer</span>
+<span class="s1">from </span><span class="s2">tqdm </span><span class="s1">import </span><span class="s2">tqdm</span>
+<span class="s1">from </span><span class="s2">matplotlib </span><span class="s1">import </span><span class="s2">pyplot </span><span class="s1">as </span><span class="s2">plt</span>
+<span class="s0">#%% 
+# 自定义类，用于封装tif文件的操作</span>
+<span class="s1">class </span><span class="s2">TifFile:</span>
+    <span class="s1">def </span><span class="s2">__init__(self</span><span class="s3">, </span><span class="s2">file_path):</span>
+        <span class="s2">self.file_path = file_path</span>
+        <span class="s1">with </span><span class="s2">rasterio.open(self.file_path) </span><span class="s1">as </span><span class="s2">src:</span>
+            <span class="s2">self.data = src.read(</span><span class="s4">1</span><span class="s2">)  </span><span class="s0"># 数值矩阵</span>
+            <span class="s2">self.shape = self.data.shape  </span><span class="s0"># 矩阵大小</span>
+            <span class="s2">self.transform = src.transform  </span><span class="s0"># 坐标变换参数</span>
+            <span class="s2">self.crs = src.crs  </span><span class="s0"># 坐标参考系统</span>
+            <span class="s2">self.bounds = src.bounds  </span><span class="s0"># 边界坐标</span>
+            <span class="s2">self.width = src.width  </span><span class="s0"># 宽度</span>
+            <span class="s2">self.height = src.height  </span><span class="s0"># 高度</span>
+            <span class="s2">self.count = src.count  </span><span class="s0"># 波段数</span>
+
+
+<span class="s0"># 文件路径字典</span>
+<span class="s2">file_paths = {</span>
+    <span class="s5">&quot;GLcBld_Height&quot;</span><span class="s2">: </span><span class="s5">&quot;datasets/GLcBld_Height.tif&quot;</span><span class="s3">,</span>
+    <span class="s5">&quot;glcent_CHM&quot;</span><span class="s2">: </span><span class="s5">&quot;datasets/glcent_CHM.tif&quot;</span><span class="s3">,</span>
+    <span class="s5">&quot;glcent_DSM&quot;</span><span class="s2">: </span><span class="s5">&quot;datasets/glcent_DSM.tif&quot;</span><span class="s3">,</span>
+    <span class="s5">&quot;KernelD_GLcB_new&quot;</span><span class="s2">: </span><span class="s5">&quot;datasets/KernelD_GLcB_new.tif&quot;</span><span class="s3">,</span>
+    <span class="s5">&quot;LAI&quot;</span><span class="s2">: </span><span class="s5">&quot;datasets/LAI.tif&quot;</span>
+<span class="s2">}</span>
+
+<span class="s0"># 动态创建TifFile实例并存储为全局变量</span>
+<span class="s1">for </span><span class="s2">variable_name</span><span class="s3">, </span><span class="s2">file_path </span><span class="s1">in </span><span class="s2">file_paths.items():</span>
+    <span class="s2">tif_GLcBld_Height = TifFile(</span><span class="s5">'datasets/GLcBld_Height.tif'</span><span class="s2">)</span>
+    <span class="s2">tif_glcent_CHM = TifFile(</span><span class="s5">'datasets/glcent_CHM.tif'</span><span class="s2">)</span>
+    <span class="s2">tif_glcent_DSM = TifFile(</span><span class="s5">'datasets/glcent_DSM.tif'</span><span class="s2">)</span>
+    <span class="s2">tif_KernelD_GLcB_new = TifFile(</span><span class="s5">'datasets/KernelD_GLcB_new.tif'</span><span class="s2">)</span>
+    <span class="s2">tif_LAI = TifFile(</span><span class="s5">'datasets/LAI.tif'</span><span class="s2">)</span>
+
+<span class="s0">#%% md 
+</span><span class="s2"># 数据信息了解 
+</span><span class="s0">#%% 
+</span><span class="s2">tif_GLcBld_Height.data</span>
+<span class="s0">#%% 
+# 计算每个唯一值的数量</span>
+<span class="s2">unique_values</span><span class="s3">, </span><span class="s2">counts = np.unique(tif_GLcBld_Height.data</span><span class="s3">, </span><span class="s2">return_counts=</span><span class="s1">True</span><span class="s2">)</span>
+
+<span class="s0"># 根据计数进行排序，倒序排列</span>
+<span class="s2">sorted_indices = np.argsort(counts)[::-</span><span class="s4">1</span><span class="s2">]</span>
+
+<span class="s0"># 使用排序后的索引重新排序唯一值和计数</span>
+<span class="s2">sorted_unique_values = unique_values[sorted_indices]</span>
+<span class="s2">sorted_counts = counts[sorted_indices]</span>
+
+<span class="s0"># 打印倒序的结果</span>
+<span class="s1">for </span><span class="s2">value</span><span class="s3">, </span><span class="s2">count </span><span class="s1">in </span><span class="s2">zip(sorted_unique_values</span><span class="s3">, </span><span class="s2">sorted_counts):</span>
+    <span class="s2">print(</span><span class="s5">f&quot;Value: </span><span class="s6">{</span><span class="s2">value</span><span class="s6">}</span><span class="s5">, Count: </span><span class="s6">{</span><span class="s2">count</span><span class="s6">}</span><span class="s5">&quot;</span><span class="s2">)</span>
+<span class="s0">#%% 
+# 计算基本统计数据（此部分与前面代码相同）</span>
+<span class="s2">mean_value = np.mean(tif_GLcBld_Height.data)</span>
+<span class="s2">std_dev = np.std(tif_GLcBld_Height.data)</span>
+<span class="s2">min_value = np.min(tif_GLcBld_Height.data)</span>
+<span class="s2">max_value = np.max(tif_GLcBld_Height.data)</span>
+
+<span class="s2">print(</span><span class="s5">&quot;</span><span class="s6">\n</span><span class="s5">Basic Statistics:&quot;</span><span class="s2">)</span>
+<span class="s2">print(</span><span class="s5">f&quot;Mean: </span><span class="s6">{</span><span class="s2">mean_value</span><span class="s6">}</span><span class="s5">&quot;</span><span class="s2">)</span>
+<span class="s2">print(</span><span class="s5">f&quot;Standard Deviation: </span><span class="s6">{</span><span class="s2">std_dev</span><span class="s6">}</span><span class="s5">&quot;</span><span class="s2">)</span>
+<span class="s2">print(</span><span class="s5">f&quot;Min: </span><span class="s6">{</span><span class="s2">min_value</span><span class="s6">}</span><span class="s5">&quot;</span><span class="s2">)</span>
+<span class="s2">print(</span><span class="s5">f&quot;Max: </span><span class="s6">{</span><span class="s2">max_value</span><span class="s6">}</span><span class="s5">&quot;</span><span class="s2">)</span>
+<span class="s0">#%% 
+</span><span class="s2">tif_GLcBld_Height.transform</span>
+<span class="s0">#%% 
+</span><span class="s2">tif_GLcBld_Height.crs</span>
+<span class="s0">#%% 
+</span><span class="s2">tif_GLcBld_Height.bounds</span>
+<span class="s0">#%% 
+</span><span class="s2">tif_GLcBld_Height.width</span>
+<span class="s0">#%% 
+</span><span class="s2">tif_GLcBld_Height.height</span>
+<span class="s0">#%% 
+</span><span class="s2">tif_GLcBld_Height.count</span>
+<span class="s0">#%% 
+</span><span class="s2">tif_glcent_CHM.data</span>
+<span class="s0">#%% 
+</span><span class="s2">tif_list = [tif_GLcBld_Height</span><span class="s3">, </span><span class="s2">tif_glcent_CHM</span><span class="s3">, </span><span class="s2">tif_glcent_DSM</span><span class="s3">, </span><span class="s2">tif_KernelD_GLcB_new</span><span class="s3">, </span><span class="s2">tif_LAI]</span>
+
+<span class="s0"># 创建一个空的列表，用于存储每个tif文件的属性</span>
+<span class="s2">data = []</span>
+
+<span class="s0"># 遍历每个TifFile对象，提取属性并存储到data列表中</span>
+<span class="s2">data = [</span>
+    <span class="s2">{</span>
+        <span class="s5">&quot;Name&quot;</span><span class="s2">: tif.file_path.split(</span><span class="s5">'/'</span><span class="s2">)[-</span><span class="s4">1</span><span class="s2">]</span><span class="s3">,  </span><span class="s0"># 提取文件名</span>
+        <span class="s5">&quot;Data&quot;</span><span class="s2">: tif.data</span><span class="s3">,</span>
+        <span class="s5">&quot;Data.shape&quot;</span><span class="s2">: tif.shape</span><span class="s3">,</span>
+        <span class="s5">&quot;Transform&quot;</span><span class="s2">: tif.transform</span><span class="s3">,</span>
+        <span class="s5">&quot;CRS&quot;</span><span class="s2">: tif.crs</span><span class="s3">,</span>
+        <span class="s5">&quot;Bounds&quot;</span><span class="s2">: tif.bounds</span><span class="s3">,</span>
+        <span class="s5">&quot;Width&quot;</span><span class="s2">: tif.width</span><span class="s3">,</span>
+        <span class="s5">&quot;Height&quot;</span><span class="s2">: tif.height</span><span class="s3">,</span>
+        <span class="s5">&quot;Band Count&quot;</span><span class="s2">: tif.count</span>
+    <span class="s2">}</span>
+    <span class="s1">for </span><span class="s2">tif </span><span class="s1">in </span><span class="s2">tif_list</span>
+<span class="s2">]</span>
+
+<span class="s0"># 将列表转换为DataFrame</span>
+<span class="s2">df = pd.DataFrame(data)</span>
+
+<span class="s0">#%% 
+</span><span class="s2">df</span>
+<span class="s0">#%% 
+</span><span class="s2">A = tif_glcent_CHM</span>
+<span class="s2">B = tif_GLcBld_Height</span>
+<span class="s2">transform_A = A.transform</span>
+<span class="s2">transform_B = B.transform</span>
+<span class="s2">width_A = A.width</span>
+<span class="s2">height_A = A.height</span>
+<span class="s2">width_B = B.width</span>
+<span class="s2">height_B = B.height</span>
+<span class="s0">#%% 
+</span><span class="s2">transform_A</span>
+<span class="s0">#%% 
+</span><span class="s2">transform_B</span>
+<span class="s0">#%% 
+</span><span class="s2">width_A</span>
+<span class="s0">#%% md 
+</span><span class="s2">边界计算： 
+已知信息 
+A 的仿射变换: Affine(5.0, 0.0, 258000.0, 0.0, -5.0, 666000.0) 
+B 的仿射变换: Affine(5.0, 0.0, 257976.73599999997, 0.0, -5.0, 666174.3099999997) 
+ 
+A 的大小: width_A = 400，height_A = 400 
+B 的大小: width_B = 421，height_B = 455 
+ 
+计算边界（Bounding Box） 
+我们需要计算两个图像的空间范围（Bounding Box），即确定它们的左上角和右下角的地理坐标。 
+ 
+1. A 的边界 
+左上角（xmin_A, ymax_A）: 
+xmin_A = 258000.0 
+ymax_A = 666000.0 
+右下角（xmax_A, ymin_A）: 
+xmax_A = 258000.0 + 400 * 5.0 = 260000.0 
+ymin_A = 666000.0 + 400 * -5.0 = 664000.0 
+因此，A 的边界是： 
+ 
+(xmin_A, ymin_A, xmax_A, ymax_A) = (258000.0, 664000.0, 260000.0, 666000.0) 
+2. B 的边界 
+左上角（xmin_B, ymax_B）: 
+xmin_B = 257976.736 
+ymax_B = 666174.31 
+右下角（xmax_B, ymin_B）: 
+xmax_B = 257976.736 + 421 * 5.0 = 260081.736 
+ymin_B = 666174.31 + 455 * -5.0 = 663899.81 
+因此，B 的边界是： 
+ 
+(xmin_B, ymin_B, xmax_B, ymax_B) = (257976.736, 663899.81, 260081.736, 666174.31) 
+ 
+B完全覆盖A 
+</span><span class="s0">#%% 
+# 读取 B 的文件</span>
+<span class="s1">with </span><span class="s2">rasterio.open(</span><span class="s5">'datasets/GLcBld_Height.tif'</span><span class="s2">) </span><span class="s1">as </span><span class="s2">src_B:</span>
+    <span class="s0"># A 的边界</span>
+    <span class="s2">xmin_A</span><span class="s3">, </span><span class="s2">ymin_A</span><span class="s3">, </span><span class="s2">xmax_A</span><span class="s3">, </span><span class="s2">ymax_A = </span><span class="s4">258000.0</span><span class="s3">, </span><span class="s4">664000.0</span><span class="s3">, </span><span class="s4">260000.0</span><span class="s3">, </span><span class="s4">666000.0</span>
+
+    <span class="s0"># 计算 B 中与 A 重叠的窗口</span>
+    <span class="s2">window = from_bounds(xmin_A</span><span class="s3">, </span><span class="s2">ymin_A</span><span class="s3">, </span><span class="s2">xmax_A</span><span class="s3">, </span><span class="s2">ymax_A</span><span class="s3">, </span><span class="s2">transform=src_B.transform)</span>
+
+    <span class="s0"># 获取窗口的行列偏移和大小</span>
+    <span class="s2">col_off</span><span class="s3">, </span><span class="s2">row_off = window.col_off</span><span class="s3">, </span><span class="s2">window.row_off</span>
+    <span class="s2">width</span><span class="s3">, </span><span class="s2">height = window.width</span><span class="s3">, </span><span class="s2">window.height</span>
+
+    <span class="s0"># 打印裁剪范围相对于原始 B 图像的行列范围</span>
+    <span class="s2">print(</span><span class="s5">f&quot;裁剪范围在原始 B 图像中的列偏移: </span><span class="s6">{</span><span class="s2">col_off</span><span class="s6">}</span><span class="s5">, 行偏移: </span><span class="s6">{</span><span class="s2">row_off</span><span class="s6">}</span><span class="s5">&quot;</span><span class="s2">)</span>
+    <span class="s2">print(</span><span class="s5">f&quot;裁剪范围的宽度: </span><span class="s6">{</span><span class="s2">width</span><span class="s6">} </span><span class="s5">像素，高度: </span><span class="s6">{</span><span class="s2">height</span><span class="s6">} </span><span class="s5">像素&quot;</span><span class="s2">)</span>
+    <span class="s2">print(</span><span class="s5">f&quot;裁剪范围结束的列号: </span><span class="s6">{</span><span class="s2">col_off + width</span><span class="s6">}</span><span class="s5">, 行号: </span><span class="s6">{</span><span class="s2">row_off + height</span><span class="s6">}</span><span class="s5">&quot;</span><span class="s2">)</span>
+
+    <span class="s0"># 读取窗口内的 B 的数据</span>
+    <span class="s2">B_overlap_data = src_B.read(window=window)</span>
+
+    <span class="s0"># 生成裁剪后的 B 数据</span>
+    <span class="s2">profile = src_B.profile</span>
+    <span class="s2">profile.update({</span>
+        <span class="s5">&quot;height&quot;</span><span class="s2">: window.height</span><span class="s3">,</span>
+        <span class="s5">&quot;width&quot;</span><span class="s2">: window.width</span><span class="s3">,</span>
+        <span class="s5">&quot;transform&quot;</span><span class="s2">: rasterio.windows.transform(window</span><span class="s3">, </span><span class="s2">src_B.transform)</span>
+    <span class="s2">})</span>
+
+<span class="s0">#%% 
+</span><span class="s2">B_overlap_data</span>
+<span class="s0">#%% 
+</span><span class="s2">C = B_overlap_data[</span><span class="s4">0</span><span class="s3">, </span><span class="s2">:</span><span class="s3">, </span><span class="s2">:]</span>
+<span class="s0">#%% 
+</span><span class="s2">CHM_tif = copy.deepcopy(tif_glcent_CHM)</span>
+<span class="s2">DSM_tif = copy.deepcopy(tif_glcent_DSM)</span>
+<span class="s2">LAI_tif = copy.deepcopy(tif_LAI)</span>
+<span class="s2">BH_tif = copy.deepcopy(tif_glcent_CHM)</span>
+<span class="s0">#%% 
+</span><span class="s2">BH_tif</span>
+<span class="s0">#%% 
+</span><span class="s2">BH_tif.data</span>
+<span class="s0">#%% 
+</span><span class="s2">B_overlap_data.shape</span>
+<span class="s0">#%% 
+</span>
+<span class="s2">BH_tif.data = C</span>
+<span class="s2">BH_tif.shape = C.shape</span>
+<span class="s0">#%% 
+</span><span class="s2">BH_tif.data</span>
+<span class="s0">#%% 
+</span><span class="s2">list_tif = [</span>
+    <span class="s2">BH_tif</span><span class="s3">,  </span><span class="s0"># 建筑物高度</span>
+    <span class="s2">CHM_tif</span><span class="s3">,  </span><span class="s0"># 树冠高度</span>
+    <span class="s2">LAI_tif</span><span class="s3">,  </span><span class="s0"># 叶面积指数</span>
+    <span class="s2">DSM_tif  </span><span class="s0"># 地形数据   </span>
+<span class="s2">]</span>
+
+<span class="s2">data1 = []</span>
+
+<span class="s0"># 遍历每个TifFile对象，提取属性并存储到data列表中</span>
+<span class="s2">data1 = [</span>
+    <span class="s2">{</span>
+        <span class="s5">&quot;Name&quot;</span><span class="s2">: tif.file_path.split(</span><span class="s5">'/'</span><span class="s2">)[-</span><span class="s4">1</span><span class="s2">]</span><span class="s3">,  </span><span class="s0"># 提取文件名</span>
+        <span class="s5">&quot;Data&quot;</span><span class="s2">: tif.data</span><span class="s3">,</span>
+        <span class="s5">&quot;Data.shape&quot;</span><span class="s2">: tif.shape</span><span class="s3">,</span>
+        <span class="s5">&quot;Transform&quot;</span><span class="s2">: tif.transform</span><span class="s3">,</span>
+        <span class="s5">&quot;CRS&quot;</span><span class="s2">: tif.crs</span><span class="s3">,</span>
+        <span class="s5">&quot;Bounds&quot;</span><span class="s2">: tif.bounds</span><span class="s3">,</span>
+        <span class="s5">&quot;Width&quot;</span><span class="s2">: tif.width</span><span class="s3">,</span>
+        <span class="s5">&quot;Height&quot;</span><span class="s2">: tif.height</span><span class="s3">,</span>
+        <span class="s5">&quot;Band Count&quot;</span><span class="s2">: tif.count</span>
+    <span class="s2">}</span>
+    <span class="s1">for </span><span class="s2">tif </span><span class="s1">in </span><span class="s2">list_tif</span>
+<span class="s2">]</span>
+<span class="s0">#%% 
+</span><span class="s2">df = pd.DataFrame(data1)</span>
+<span class="s0">#%% 
+</span><span class="s2">df</span>
+<span class="s0">#%% 
+</span><span class="s2">list_tifs = [BH_tif.data</span><span class="s3">, </span><span class="s2">CHM_tif.data</span><span class="s3">, </span><span class="s2">LAI_tif.data</span><span class="s3">, </span><span class="s2">DSM_tif.data]</span>
+<span class="s0">#%% 
+</span><span class="s2">list_tifs</span>
+<span class="s0">#%% md 
+</span><span class="s2"># 网格数据差值 
+</span><span class="s0">#%% 
+# 已知点的坐标和温度值</span>
+<span class="s2">points = np.array([</span>
+    <span class="s2">[</span><span class="s4">0</span><span class="s3">, </span><span class="s4">0</span><span class="s2">]</span><span class="s3">,  </span><span class="s0"># 点 A</span>
+    <span class="s2">[</span><span class="s4">1</span><span class="s3">, </span><span class="s4">0</span><span class="s2">]</span><span class="s3">,  </span><span class="s0"># 点 B</span>
+    <span class="s2">[</span><span class="s4">0</span><span class="s3">, </span><span class="s4">1</span><span class="s2">]   </span><span class="s0"># 点 C</span>
+<span class="s2">])</span>
+
+<span class="s2">temperatures = np.array([</span><span class="s4">5</span><span class="s3">, </span><span class="s4">6</span><span class="s3">, </span><span class="s4">7</span><span class="s2">])  </span><span class="s0"># 点 A, B, C 的温度值</span>
+
+<span class="s0"># 半变异矩阵</span>
+<span class="s2">Gamma = np.array([</span>
+    <span class="s2">[</span><span class="s4">0</span><span class="s3">, </span><span class="s4">1</span><span class="s3">, </span><span class="s4">1</span><span class="s3">, </span><span class="s4">1</span><span class="s2">]</span><span class="s3">,          </span><span class="s0"># 点 A 到 A, B, C 和约束条件</span>
+    <span class="s2">[</span><span class="s4">1</span><span class="s3">, </span><span class="s4">0</span><span class="s3">, </span><span class="s2">np.sqrt(</span><span class="s4">2</span><span class="s2">)</span><span class="s3">, </span><span class="s4">1</span><span class="s2">]</span><span class="s3">, </span><span class="s0"># 点 B 到 A, B, C 和约束条件</span>
+    <span class="s2">[</span><span class="s4">1</span><span class="s3">, </span><span class="s2">np.sqrt(</span><span class="s4">2</span><span class="s2">)</span><span class="s3">, </span><span class="s4">0</span><span class="s3">, </span><span class="s4">1</span><span class="s2">]</span><span class="s3">, </span><span class="s0"># 点 C 到 A, B, C 和约束条件</span>
+    <span class="s2">[</span><span class="s4">1</span><span class="s3">, </span><span class="s4">1</span><span class="s3">, </span><span class="s4">1</span><span class="s3">, </span><span class="s4">0</span><span class="s2">]           </span><span class="s0"># 约束条件</span>
+<span class="s2">])</span>
+
+<span class="s0"># 目标点 P 的坐标</span>
+<span class="s2">P = np.array([</span><span class="s4">0.5</span><span class="s3">, </span><span class="s4">0.5</span><span class="s2">])</span>
+
+<span class="s0"># 计算 P 到 A, B, C 的半变异函数值</span>
+<span class="s2">gamma = np.array([</span>
+    <span class="s2">np.sqrt(np.sum((P - points[</span><span class="s4">0</span><span class="s2">])**</span><span class="s4">2</span><span class="s2">))</span><span class="s3">,  </span><span class="s0"># 到 A 的距离</span>
+    <span class="s2">np.sqrt(np.sum((P - points[</span><span class="s4">1</span><span class="s2">])**</span><span class="s4">2</span><span class="s2">))</span><span class="s3">,  </span><span class="s0"># 到 B 的距离</span>
+    <span class="s2">np.sqrt(np.sum((P - points[</span><span class="s4">2</span><span class="s2">])**</span><span class="s4">2</span><span class="s2">))</span><span class="s3">,  </span><span class="s0"># 到 C 的距离</span>
+    <span class="s4">1  </span><span class="s0"># 约束条件</span>
+<span class="s2">])</span>
+
+<span class="s0"># 解克里金系统</span>
+<span class="s2">lambdas = np.linalg.solve(Gamma</span><span class="s3">, </span><span class="s2">gamma)</span>
+
+<span class="s0"># 提取权重</span>
+<span class="s2">lambda_A</span><span class="s3">, </span><span class="s2">lambda_B</span><span class="s3">, </span><span class="s2">lambda_C</span><span class="s3">, </span><span class="s2">mu = lambdas</span>
+
+<span class="s0"># 使用权重计算插值点 P 的温度值</span>
+<span class="s2">Z_P = lambda_A * temperatures[</span><span class="s4">0</span><span class="s2">] + lambda_B * temperatures[</span><span class="s4">1</span><span class="s2">] + lambda_C * temperatures[</span><span class="s4">2</span><span class="s2">]</span>
+
+<span class="s2">print(</span><span class="s5">f&quot;点 P (0.5, 0.5) 的估计温度值为: </span><span class="s6">{</span><span class="s2">Z_P</span><span class="s6">:</span><span class="s5">.2f</span><span class="s6">}</span><span class="s5">&quot;</span><span class="s2">)</span>
+
+<span class="s0">#%% 
+# 输入6个点的坐标和天气数据值</span>
+
+<span class="s0"># 提取的数据如下：</span>
+<span class="s2">data_5_extra_points = [</span>
+    <span class="s2">[</span><span class="s5">'Renfrew Weather'</span><span class="s3">, </span><span class="s2">(</span><span class="s4">55.8739065</span><span class="s3">, </span><span class="s2">-</span><span class="s4">4.3887910</span><span class="s2">)</span><span class="s3">, </span><span class="s2">(</span><span class="s4">250756.73</span><span class="s3">, </span><span class="s4">666880.47</span><span class="s2">)</span><span class="s3">, </span><span class="s5">'31/07/2024 09:30:00'</span><span class="s3">, </span><span class="s4">8.4</span><span class="s3">, </span><span class="s4">17</span><span class="s3">, </span><span class="s4">57</span><span class="s3">, </span><span class="s4">0.4</span><span class="s2">]</span><span class="s3">,</span>
+    <span class="s2">[</span><span class="s5">'Ralston Weather Station'</span><span class="s3">, </span><span class="s2">(</span><span class="s4">55.8466298</span><span class="s3">, </span><span class="s2">-</span><span class="s4">4.3708027</span><span class="s2">)</span><span class="s3">, </span><span class="s2">(</span><span class="s4">251848.22</span><span class="s3">, </span><span class="s4">663740.00</span><span class="s2">)</span><span class="s3">, </span><span class="s5">'31/07/2024 09:30:00'</span><span class="s3">, </span><span class="s4">8.1</span><span class="s3">, </span><span class="s4">11.8</span><span class="s3">, </span><span class="s4">78.2</span><span class="s3">, </span><span class="s4">0.9</span><span class="s2">]</span><span class="s3">,</span>
+    <span class="s2">[</span><span class="s5">'Cathcart'</span><span class="s3">, </span><span class="s2">(</span><span class="s4">55.8114036</span><span class="s3">, </span><span class="s2">-</span><span class="s4">4.2603826</span><span class="s2">)</span><span class="s3">, </span><span class="s2">(</span><span class="s4">258548.22</span><span class="s3">, </span><span class="s4">659684.28</span><span class="s2">)</span><span class="s3">, </span><span class="s5">'31/07/2024 09:28:07'</span><span class="s3">, </span><span class="s4">10</span><span class="s3">, </span><span class="s4">15.9</span><span class="s3">, </span><span class="s4">68</span><span class="s3">, </span><span class="s4">0</span><span class="s2">]</span><span class="s3">,</span>
+    <span class="s2">[</span><span class="s5">'Clincarthill'</span><span class="s3">, </span><span class="s2">(</span><span class="s4">55.8253972</span><span class="s3">, </span><span class="s2">-</span><span class="s4">4.2119939</span><span class="s2">)</span><span class="s3">, </span><span class="s2">(</span><span class="s4">261484.32</span><span class="s3">, </span><span class="s4">661295.42</span><span class="s2">)</span><span class="s3">, </span><span class="s5">'31/07/2024 09:29:36'</span><span class="s3">, </span><span class="s4">9.3</span><span class="s3">, </span><span class="s4">15.1</span><span class="s3">, </span><span class="s4">68</span><span class="s3">, </span><span class="s4">0.8</span><span class="s2">]</span><span class="s3">,</span>
+    <span class="s2">[</span><span class="s5">'Cambuslang Scotland'</span><span class="s3">, </span><span class="s2">(</span><span class="s4">55.8253972</span><span class="s3">, </span><span class="s2">-</span><span class="s4">4.2119939</span><span class="s2">)</span><span class="s3">, </span><span class="s2">(</span><span class="s4">261484.32</span><span class="s3">, </span><span class="s4">661295.42</span><span class="s2">)</span><span class="s3">, </span><span class="s5">'31/07/2024 09:31:36'</span><span class="s3">, </span><span class="s4">8.9</span><span class="s3">, </span><span class="s4">13.4</span><span class="s3">, </span><span class="s4">74</span><span class="s3">, </span><span class="s4">0</span><span class="s2">]</span>
+<span class="s2">]</span>
+
+<span class="s0"># 直接将数据列表转换为 Pandas DataFrame</span>
+<span class="s2">columns = [</span><span class="s5">'Location'</span><span class="s3">, </span><span class="s5">'A Coordinates (Lat, Lon)'</span><span class="s3">, </span><span class="s5">'B Coordinates (X_B, Y_B)'</span><span class="s3">, </span><span class="s5">'Report Date / Time'</span><span class="s3">, </span><span class="s5">'Dew Point (°C)'</span><span class="s3">, </span><span class="s5">'Air Temperature (°C)'</span><span class="s3">, </span><span class="s5">'Relative Humidity (%)'</span><span class="s3">, </span><span class="s5">'Wind Speed (kn)'</span><span class="s2">]</span>
+<span class="s2">df_5_extra_points = pd.DataFrame(data_5_extra_points</span><span class="s3">, </span><span class="s2">columns=columns)</span>
+
+<span class="s0"># 显示 DataFrame</span>
+<span class="s2">df_5_extra_points</span>
+
+<span class="s0">#%% 
+# 从DataFrame中提取B坐标系的点和相关数据</span>
+<span class="s2">B_points = np.array([item[</span><span class="s4">2</span><span class="s2">] </span><span class="s1">for </span><span class="s2">item </span><span class="s1">in </span><span class="s2">data_5_extra_points])</span>
+<span class="s2">dew_points = np.array(df_5_extra_points[</span><span class="s5">'Dew Point (°C)'</span><span class="s2">])</span>
+<span class="s2">air_temps = np.array(df_5_extra_points[</span><span class="s5">'Air Temperature (°C)'</span><span class="s2">])</span>
+<span class="s2">humidity = np.array(df_5_extra_points[</span><span class="s5">'Relative Humidity (%)'</span><span class="s2">])</span>
+<span class="s2">wind_speeds = np.array(df_5_extra_points[</span><span class="s5">'Wind Speed (kn)'</span><span class="s2">])</span>
+
+<span class="s0">#%% 
+</span><span class="s2">B_points</span>
+<span class="s0">#%% 
+</span><span class="s2">dew_points</span>
+<span class="s0">#%% 
+</span><span class="s2">air_temps</span>
+<span class="s0">#%% 
+</span><span class="s2">humidity</span>
+<span class="s0">#%% 
+</span><span class="s2">wind_speeds</span>
+<span class="s0">#%% 
+# 定义网格</span>
+<span class="s2">x_min</span><span class="s3">, </span><span class="s2">x_max = </span><span class="s4">258000</span><span class="s3">, </span><span class="s4">260000</span>
+<span class="s2">y_min</span><span class="s3">, </span><span class="s2">y_max = </span><span class="s4">664000</span><span class="s3">, </span><span class="s4">666000</span>
+<span class="s2">grid_x</span><span class="s3">, </span><span class="s2">grid_y = np.mgrid[x_min:x_max:</span><span class="s4">400j</span><span class="s3">, </span><span class="s2">y_min:y_max:</span><span class="s4">400j</span><span class="s2">]</span>
+<span class="s2">grid_points = np.vstack([grid_x.ravel()</span><span class="s3">, </span><span class="s2">grid_y.ravel()]).T  </span><span class="s0"># 是一个 (160000, 2) 的数组，保存了所有网格点的 (x, y) 坐标</span>
+<span class="s0">#%% 
+</span><span class="s2">grid_points</span>
+<span class="s0">#%% 
+# 定义半变异矩阵Gamma，简化处理为欧式距离</span>
+<span class="s1">def </span><span class="s2">compute_gamma(points</span><span class="s3">, </span><span class="s2">P):</span>
+    <span class="s2">dist = np.sqrt(np.sum((points - P)**</span><span class="s4">2</span><span class="s3">, </span><span class="s2">axis=</span><span class="s4">1</span><span class="s2">))</span>
+    <span class="s1">return </span><span class="s2">np.hstack([dist</span><span class="s3">, </span><span class="s4">1</span><span class="s2">])</span>
+
+<span class="s0">#%% 
+# 函数：计算克里金插值</span>
+<span class="s1">def </span><span class="s2">kriging_interpolation(B_points</span><span class="s3">, </span><span class="s2">values</span><span class="s3">, </span><span class="s2">grid_points):</span>
+    <span class="s0"># 构造Gamma矩阵</span>
+    <span class="s2">n_points = len(B_points)</span>
+    <span class="s2">Gamma = np.ones((n_points + </span><span class="s4">1</span><span class="s3">, </span><span class="s2">n_points + </span><span class="s4">1</span><span class="s2">))</span>
+    <span class="s1">for </span><span class="s2">i </span><span class="s1">in </span><span class="s2">range(n_points):</span>
+        <span class="s1">for </span><span class="s2">j </span><span class="s1">in </span><span class="s2">range(n_points):</span>
+            <span class="s2">Gamma[i</span><span class="s3">, </span><span class="s2">j] = np.sqrt(np.sum((B_points[i] - B_points[j])**</span><span class="s4">2</span><span class="s2">))</span>
+
+    <span class="s0"># 添加一个小的正数扰动到对角线以避免奇异矩阵</span>
+    <span class="s2">Gamma[np.diag_indices_from(Gamma)] += </span><span class="s4">1e-10</span>
+
+    <span class="s2">Gamma[-</span><span class="s4">1</span><span class="s3">, </span><span class="s2">-</span><span class="s4">1</span><span class="s2">] = </span><span class="s4">0</span>
+
+    <span class="s0"># 插值结果存储</span>
+    <span class="s2">interpolated_values = []</span>
+
+    <span class="s1">for </span><span class="s2">P </span><span class="s1">in </span><span class="s2">grid_points:</span>
+        <span class="s2">gamma = compute_gamma(B_points</span><span class="s3">, </span><span class="s2">P)</span>
+        <span class="s2">lambdas = np.linalg.solve(Gamma</span><span class="s3">, </span><span class="s2">gamma)</span>
+        <span class="s2">interpolated_value = np.sum(lambdas[:-</span><span class="s4">1</span><span class="s2">] * values)</span>
+        <span class="s2">interpolated_values.append(interpolated_value)</span>
+
+    <span class="s1">return </span><span class="s2">np.array(interpolated_values)</span>
+
+<span class="s0">#%% 
+# 对每个变量进行插值</span>
+<span class="s2">dew_point_grid = kriging_interpolation(B_points</span><span class="s3">, </span><span class="s2">dew_points</span><span class="s3">, </span><span class="s2">grid_points)</span>
+<span class="s2">air_temp_grid = kriging_interpolation(B_points</span><span class="s3">, </span><span class="s2">air_temps</span><span class="s3">, </span><span class="s2">grid_points)</span>
+<span class="s2">humidity_grid = kriging_interpolation(B_points</span><span class="s3">, </span><span class="s2">humidity</span><span class="s3">, </span><span class="s2">grid_points)</span>
+<span class="s2">wind_speed_grid = kriging_interpolation(B_points</span><span class="s3">, </span><span class="s2">wind_speeds</span><span class="s3">, </span><span class="s2">grid_points)</span>
+
+<span class="s0">#%% 
+# 将结果存储为DataFrame</span>
+<span class="s2">grid_df = pd.DataFrame({</span>
+    <span class="s5">'X'</span><span class="s2">: grid_points[:</span><span class="s3">, </span><span class="s4">0</span><span class="s2">]</span><span class="s3">,</span>
+    <span class="s5">'Y'</span><span class="s2">: grid_points[:</span><span class="s3">, </span><span class="s4">1</span><span class="s2">]</span><span class="s3">,</span>
+    <span class="s5">'Dew Point (°C)'</span><span class="s2">: dew_point_grid</span><span class="s3">,</span>
+    <span class="s5">'Air Temperature (°C)'</span><span class="s2">: air_temp_grid</span><span class="s3">,</span>
+    <span class="s5">'Relative Humidity (%)'</span><span class="s2">: humidity_grid</span><span class="s3">,</span>
+    <span class="s5">'Wind Speed (kn)'</span><span class="s2">: wind_speed_grid</span>
+<span class="s2">})</span>
+<span class="s0">#%% 
+</span><span class="s2">grid_df</span>
+<span class="s0">#%% 
+# 匹配地形数据与天气数据的形状</span>
+
+<span class="s0"># 展平地形数据</span>
+<span class="s2">X = np.array([tif.ravel() </span><span class="s1">for </span><span class="s2">tif </span><span class="s1">in </span><span class="s2">list_tifs]).T </span><span class="s0"># (160000, 4)</span>
+<span class="s0">#%% 
+</span><span class="s2">X</span>
+<span class="s0">#%% 
+# 提取天气数据</span>
+<span class="s2">Y = grid_df[[</span><span class="s5">'Dew Point (°C)'</span><span class="s3">, </span><span class="s5">'Air Temperature (°C)'</span><span class="s3">, </span><span class="s5">'Relative Humidity (%)'</span><span class="s3">, </span><span class="s5">'Wind Speed (kn)'</span><span class="s2">]].values </span><span class="s0"># (160000, 4)</span>
+<span class="s0">#%% 
+</span><span class="s2">Y</span>
+<span class="s0">#%% 
+</span><span class="s2">X</span>
+<span class="s0">#%% 
+</span><span class="s2">Y</span>
+<span class="s0">#%% 
+# # 构建存储结果的表格</span>
+<span class="s2">importance_matrix = np.zeros((</span><span class="s4">4</span><span class="s3">, </span><span class="s4">4</span><span class="s2">))</span>
+<span class="s0">#%% 
+</span><span class="s1">from </span><span class="s2">sklearn.ensemble </span><span class="s1">import </span><span class="s2">RandomForestRegressor</span>
+<span class="s0">#%% 
+# 对每一个Y参数构建随机森林模型并计算重要性</span>
+<span class="s1">for </span><span class="s2">i </span><span class="s1">in </span><span class="s2">range(</span><span class="s4">4</span><span class="s2">):</span>
+    <span class="s2">y = Y[:</span><span class="s3">, </span><span class="s2">i]  </span><span class="s0"># 第 i 个 Y 参数</span>
+    <span class="s2">model = RandomForestRegressor(n_estimators=</span><span class="s4">100</span><span class="s3">, </span><span class="s2">random_state=</span><span class="s4">42</span><span class="s2">)</span>
+    <span class="s2">model.fit(X</span><span class="s3">, </span><span class="s2">y)</span>
+    <span class="s2">importance_matrix[:</span><span class="s3">, </span><span class="s2">i] = model.feature_importances_</span>
+<span class="s0">#%% 
+</span><span class="s2">model</span>
+<span class="s0">#%% 
+# 将结果转化为DataFrame以便显示</span>
+<span class="s2">importance_df = pd.DataFrame(importance_matrix</span><span class="s3">,</span>
+                             <span class="s2">columns=[</span><span class="s5">'Dew Point (°C)'</span><span class="s3">, </span><span class="s5">'Air Temperature (°C)'</span><span class="s3">, </span><span class="s5">'Relative Humidity (%)'</span><span class="s3">, </span><span class="s5">'Wind Speed (kn)'</span><span class="s2">]</span><span class="s3">,</span>
+                             <span class="s2">index=[</span><span class="s5">'建筑物高度'</span><span class="s3">, </span><span class="s5">'树冠高度'</span><span class="s3">, </span><span class="s5">'叶面积指数'</span><span class="s3">, </span><span class="s5">'地形数据'</span><span class="s2">])</span>
+
+<span class="s0">#%% 
+# 显示结果</span>
+<span class="s2">importance_df</span>
+<span class="s0">#%% 
+# 读取数据</span>
+<span class="s2">X </span>
+<span class="s0">#%% 
+</span><span class="s2">Y</span>
+<span class="s0">#%% 
+</span><span class="s1">from </span><span class="s2">sklearn.metrics </span><span class="s1">import </span><span class="s2">mean_squared_error</span><span class="s3">, </span><span class="s2">r2_score</span><span class="s3">, </span><span class="s2">mean_absolute_error</span><span class="s3">, </span><span class="s2">make_scorer</span>
+<span class="s1">from </span><span class="s2">skopt </span><span class="s1">import </span><span class="s2">BayesSearchCV</span>
+<span class="s1">from </span><span class="s2">skopt.space </span><span class="s1">import </span><span class="s2">Integer</span><span class="s3">, </span><span class="s2">Categorical</span>
+<span class="s1">from </span><span class="s2">sklearn.ensemble </span><span class="s1">import </span><span class="s2">RandomForestRegressor</span>
+<span class="s1">import </span><span class="s2">numpy </span><span class="s1">as </span><span class="s2">np</span>
+<span class="s1">import </span><span class="s2">matplotlib.pyplot </span><span class="s1">as </span><span class="s2">plt</span>
+<span class="s1">from </span><span class="s2">tqdm </span><span class="s1">import </span><span class="s2">tqdm</span>
+<span class="s1">import </span><span class="s2">pandas </span><span class="s1">as </span><span class="s2">pd</span>
+<span class="s1">import </span><span class="s2">time</span>
+<span class="s1">from </span><span class="s2">datetime </span><span class="s1">import </span><span class="s2">datetime</span>
+<span class="s0">#%% 
+# 定义进度条回调函数</span>
+<span class="s1">class </span><span class="s2">TqdmProgressCallback:</span>
+    <span class="s1">def </span><span class="s2">__init__(self</span><span class="s3">, </span><span class="s2">total_iterations</span><span class="s3">, </span><span class="s2">model_idx):</span>
+        <span class="s2">self.pbar = tqdm(total=total_iterations</span><span class="s3">, </span><span class="s2">desc=</span><span class="s5">f&quot;Optimizing Model </span><span class="s6">{</span><span class="s2">model_idx+</span><span class="s4">1</span><span class="s6">}</span><span class="s5">&quot;</span><span class="s2">)</span>
+
+    <span class="s1">def </span><span class="s2">__call__(self</span><span class="s3">, </span><span class="s2">result):</span>
+        <span class="s2">self.pbar.update(</span><span class="s4">1</span><span class="s2">)</span>
+
+    <span class="s1">def </span><span class="s2">close(self):</span>
+        <span class="s2">self.pbar.close()</span>
+<span class="s0">#%% 
+# 定义随机森林的超参数搜索空间</span>
+<span class="s2">search_space = {</span>
+    <span class="s5">'n_estimators'</span><span class="s2">: Integer(</span><span class="s4">100</span><span class="s3">, </span><span class="s4">300</span><span class="s2">)</span><span class="s3">,  </span><span class="s0"># 决策树数量</span>
+    <span class="s5">'max_depth'</span><span class="s2">: Integer(</span><span class="s4">10</span><span class="s3">, </span><span class="s4">30</span><span class="s2">)</span><span class="s3">,  </span><span class="s0"># 最大深度</span>
+    <span class="s5">'max_features'</span><span class="s2">: Categorical([</span><span class="s5">'sqrt'</span><span class="s3">, </span><span class="s5">'log2'</span><span class="s3">, </span><span class="s1">None</span><span class="s2">])</span><span class="s3">, </span><span class="s0"># 最大特征数，None表示使用所有特征</span>
+    <span class="s5">'min_samples_split'</span><span class="s2">: Integer(</span><span class="s4">2</span><span class="s3">, </span><span class="s4">10</span><span class="s2">)</span><span class="s3">,  </span><span class="s0"># 最小分裂样本数</span>
+    <span class="s5">'min_samples_leaf'</span><span class="s2">: Integer(</span><span class="s4">1</span><span class="s3">, </span><span class="s4">4</span><span class="s2">)</span><span class="s3">,  </span><span class="s0"># 最小叶子节点样本数</span>
+    <span class="s0"># 'bootstrap': Categorical([True])  # 由于袋外估计必须使用自助采样法，因此固定其值</span>
+<span class="s2">}</span>
+
+<span class="s0">#%% 
+# 初始化随机森林模型</span>
+<span class="s2">model = RandomForestRegressor(random_state=</span><span class="s4">42</span><span class="s3">, </span><span class="s2">oob_score=</span><span class="s1">True</span><span class="s2">)</span>
+
+<span class="s0"># 用于存储每个模型的结果</span>
+<span class="s0"># all_results = []</span>
+<span class="s2">best_metrics_results = []</span>
+
+<span class="s0"># 用于储存模型的特征重要性</span>
+<span class="s2">importance_matrix = np.zeros((</span><span class="s4">4</span><span class="s3">, </span><span class="s4">4</span><span class="s2">))</span>
+
+<span class="s2">n_iter = </span><span class="s4">10  </span><span class="s0"># 迭代次数</span>
+
+<span class="s0">#%% 
+</span><span class="s2">scoring = {</span>
+    <span class="s5">'mse'</span><span class="s2">: </span><span class="s5">'neg_mean_squared_error'</span><span class="s3">,  </span><span class="s0"># Mean Squared Error 均方误差</span>
+    <span class="s5">'r2'</span><span class="s2">: </span><span class="s5">'r2'</span><span class="s3">,  </span><span class="s0"># R² Coefficient of Determination 决定系数</span>
+    <span class="s5">'mae'</span><span class="s2">: </span><span class="s5">'neg_mean_absolute_error'</span><span class="s3">,  </span><span class="s0"># Mean Absolute Error 平均绝对误差</span>
+<span class="s2">}</span>
+<span class="s0">#%% 
+# 使用贝叶斯优化进行超参数搜索</span>
+<span class="s2">bayes_search = BayesSearchCV(</span>
+    <span class="s2">estimator=model</span><span class="s3">,</span>
+    <span class="s2">search_spaces=search_space</span><span class="s3">,</span>
+    <span class="s2">n_iter=n_iter</span><span class="s3">,  </span><span class="s0"># 迭代次数</span>
+    <span class="s2">cv=</span><span class="s4">5</span><span class="s3">,  </span><span class="s0"># 5 折交叉验证</span>
+    <span class="s2">n_jobs=-</span><span class="s4">1</span><span class="s3">,  </span><span class="s0"># 使用所有可用的核</span>
+    <span class="s2">verbose=</span><span class="s4">0</span><span class="s3">,  </span><span class="s0"># 显示详细信息</span>
+    <span class="s2">scoring=scoring</span><span class="s3">, </span><span class="s0"># 评分标准</span>
+    <span class="s2">refit=</span><span class="s5">'mse' </span><span class="s0"># 使用负均方误差作为评分, 这样scoring里的值都会被计算和储存，但是只使用mse作为优化标准</span>
+<span class="s2">)</span>
+<span class="s0">#%% 
+</span><span class="s2">%%time</span>
+<span class="s0"># 开始贝叶斯优化并找到最佳参数</span>
+<span class="s2">print(</span><span class="s5">&quot;Optimizing model&quot;</span><span class="s2">)</span>
+<span class="s2">progress_callback = TqdmProgressCallback(total_iterations=n_iter</span><span class="s3">, </span><span class="s2">model_idx=</span><span class="s4">0</span><span class="s2">)</span>
+
+<span class="s0"># 第一次贝叶斯优化</span>
+<span class="s2">print(</span><span class="s5">'----------start fit----------'</span><span class="s2">)</span>
+<span class="s2">bayes_search.fit(X</span><span class="s3">, </span><span class="s2">Y[:</span><span class="s3">, </span><span class="s4">0</span><span class="s2">]</span><span class="s3">, </span><span class="s2">callback=[progress_callback])</span>
+<span class="s2">print(</span><span class="s5">'----------end fit----------'</span><span class="s2">)</span>
+
+<span class="s0"># 显式关闭进度条</span>
+<span class="s2">progress_callback.close()</span>
+
+<span class="s0">#%% 
+# 提取优化后的最佳参数</span>
+<span class="s2">best_params = bayes_search.best_params_</span>
+<span class="s0">#%% 
+# 打印最佳参数</span>
+<span class="s2">best_params</span>
+<span class="s0">#%% 
+# </span>
+<span class="s2">bayes_search.cv_results_</span>
+<span class="s0">#%% md 
+</span><span class="s2">## 储存某次的优化结果 
+bayes_search.cv_results_={ 
+ 'mean_fit_time': array([ 28.55289884, 155.50317574,  52.50600681,  91.00274124, 
+         66.90605783,  23.31525884,  74.57730494,  23.05400348, 
+         44.88403435,  39.85511346]), 
+ 'std_fit_time': array([0.54538374, 7.96362842, 0.64139296, 1.40312096, 1.6577354 , 
+        0.30543965, 0.77421921, 0.1786838 , 2.19447796, 0.61888006]), 
+ 'mean_score_time': array([0.43226819, 1.38214898, 0.56199446, 1.42403045, 0.95648804, 
+        0.27831697, 1.14831452, 0.23273978, 0.55242758, 0.50476799]), 
+ 'std_score_time': array([0.01843124, 0.14913223, 0.05973453, 0.25503474, 0.11458144, 
+        0.08118022, 0.10377971, 0.0228234 , 0.0392118 , 0.06492125]), 
+ 'param_max_depth': masked_array(data=[22, 30, 13, 28, 30, 12, 20, 11, 14, 14], 
+              mask=[False, False, False, False, False, False, False, False, 
+                    False, False], 
+        fill_value=999999), 
+ 'param_max_features': masked_array(data=['sqrt', None, 'log2', 'sqrt', 'log2', 'log2', 'sqrt', 
+                    'log2', 'log2', 'sqrt'], 
+              mask=[False, False, False, False, False, False, False, False, 
+                    False, False], 
+        fill_value='?', 
+             dtype=object), 
+ 'param_min_samples_leaf': masked_array(data=[2, 2, 2, 1, 4, 4, 2, 4, 1, 4], 
+              mask=[False, False, False, False, False, False, False, False, 
+                    False, False], 
+        fill_value=999999), 
+ 'param_min_samples_split': masked_array(data=[7, 6, 9, 4, 8, 6, 4, 4, 5, 3], 
+              mask=[False, False, False, False, False, False, False, False, 
+                    False, False], 
+        fill_value=999999), 
+ 'param_n_estimators': masked_array(data=[122, 299, 280, 288, 232, 122, 294, 143, 214, 208], 
+              mask=[False, False, False, False, False, False, False, False, 
+                    False, False], 
+        fill_value=999999), 
+ 'params': [OrderedDict([('max_depth', 22), 
+               ('max_features', 'sqrt'), 
+               ('min_samples_leaf', 2), 
+               ('min_samples_split', 7), 
+               ('n_estimators', 122)]), 
+  OrderedDict([('max_depth', 30), 
+               ('max_features', None), 
+               ('min_samples_leaf', 2), 
+               ('min_samples_split', 6), 
+               ('n_estimators', 299)]), 
+  OrderedDict([('max_depth', 13), 
+               ('max_features', 'log2'), 
+               ('min_samples_leaf', 2), 
+               ('min_samples_split', 9), 
+               ('n_estimators', 280)]), 
+  OrderedDict([('max_depth', 28), 
+               ('max_features', 'sqrt'), 
+               ('min_samples_leaf', 1), 
+               ('min_samples_split', 4), 
+               ('n_estimators', 288)]), 
+  OrderedDict([('max_depth', 30), 
+               ('max_features', 'log2'), 
+               ('min_samples_leaf', 4), 
+               ('min_samples_split', 8), 
+               ('n_estimators', 232)]), 
+  OrderedDict([('max_depth', 12), 
+               ('max_features', 'log2'), 
+               ('min_samples_leaf', 4), 
+               ('min_samples_split', 6), 
+               ('n_estimators', 122)]), 
+  OrderedDict([('max_depth', 20), 
+               ('max_features', 'sqrt'), 
+               ('min_samples_leaf', 2), 
+               ('min_samples_split', 4), 
+               ('n_estimators', 294)]), 
+  OrderedDict([('max_depth', 11), 
+               ('max_features', 'log2'), 
+               ('min_samples_leaf', 4), 
+               ('min_samples_split', 4), 
+               ('n_estimators', 143)]), 
+  OrderedDict([('max_depth', 14), 
+               ('max_features', 'log2'), 
+               ('min_samples_leaf', 1), 
+               ('min_samples_split', 5), 
+               ('n_estimators', 214)]), 
+  OrderedDict([('max_depth', 14), 
+               ('max_features', 'sqrt'), 
+               ('min_samples_leaf', 4), 
+               ('min_samples_split', 3), 
+               ('n_estimators', 208)])], 
+ 'split0_test_mse': array([-0.00314969, -0.003404  , -0.00299522, -0.00320047, -0.00309079, 
+        -0.00297859, -0.00314615, -0.00293712, -0.00305422, -0.00301126]), 
+ 'split1_test_mse': array([-0.00367954, -0.0039521 , -0.00304658, -0.00379419, -0.00366611, 
+        -0.00295142, -0.00361088, -0.00284054, -0.0031712 , -0.00314926]), 
+ 'split2_test_mse': array([-0.00325977, -0.00342563, -0.0031388 , -0.00335028, -0.00329055, 
+        -0.00311705, -0.00322929, -0.00310303, -0.00314138, -0.00315347]), 
+ 'split3_test_mse': array([-0.00301282, -0.00318465, -0.00281375, -0.00310288, -0.00305586, 
+        -0.00279048, -0.00298284, -0.0027541 , -0.00284909, -0.00284888]), 
+ 'split4_test_mse': array([-0.00397664, -0.00420554, -0.00364901, -0.00413234, -0.00407106, 
+        -0.00360221, -0.00394333, -0.00353378, -0.00371502, -0.00370656]), 
+ 'mean_test_mse': array([-0.00341569, -0.00363438, -0.00312867, -0.00351603, -0.00343487, 
+        -0.00308795, -0.0033825 , -0.00303372, -0.00318618, -0.00317389]), 
+ 'std_test_mse': array([0.00035823, 0.00038107, 0.00028092, 0.00038858, 0.00038499, 
+        0.00027727, 0.00034807, 0.00027557, 0.00028738, 0.00028874]), 
+ 'rank_test_mse': array([ 7, 10,  3,  9,  8,  2,  6,  1,  5,  4]), 
+  
+ 
+splitX_test_mse： 
+- 含义：split0_test_mse、split1_test_mse 等是不同折交叉验证中，在每一折上对测试集计算的均方误差（MSE）。其中的 X 表示折数（从0开始）。 
+- 负号的原因：Scikit-Learn 在进行优化时，通常希望最大化评分。因此，对于需要最小化的损失函数（如MSE），Scikit-Learn 会将其存储为负值，以便与其他评分方式（如R²）一致地进行优化。 
+- 值：这些数组中的每个值对应于一个超参数组合在该折交叉验证中的MSE。 
+ 
+mean_test_mse： 
+- 含义：这是所有交叉验证折的测试集均方误差（MSE）的平均值。该值通常用于评估每个超参数组合的整体表现。 
+- 负号的原因：同样，MSE 是损失函数，因此 Scikit-Learn 存储其为负值以便于优化。你可以通过取反来得到实际的均方误差。 
+ 
+std_test_mse： 
+- 含义：这是在所有交叉验证折上计算的 MSE 标准差，表示该超参数组合在不同交叉验证折之间的表现一致性。较小的标准差表示该超参数组合在不同数据集上表现更一致。 
+- 值：这些值是标准差，用于衡量模型在不同折上的表现波动。 
+ 
+rank_test_mse： 
+- 含义：这是根据 mean_test_mse 对所有超参数组合进行排序后的排名。1 表示表现最好的参数组合，数字越大表示表现越差。 
+- 值：这些值是排名，用于快速识别最佳的参数组合。 
+ 
+ 'split0_test_r2': array([ 0.03649199, -0.04130479,  0.08374358,  0.02095808,  0.05451029, 
+         0.08883226,  0.03757433,  0.10151746,  0.06569649,  0.07883888]), 
+ 'split1_test_r2': array([-0.17892284, -0.26625028,  0.02387768, -0.21565647, -0.17461737, 
+         0.0543681 , -0.15692174,  0.08989159, -0.01605045, -0.00902198]), 
+ 'split2_test_r2': array([-0.13331823, -0.19098099, -0.09126124, -0.1647846 , -0.14401791, 
+        -0.08370052, -0.1227201 , -0.07882384, -0.09215823, -0.09636228]), 
+ 'split3_test_r2': array([-0.17730976, -0.24445503, -0.09952139, -0.21250353, -0.19412785, 
+        -0.09042801, -0.1655939 , -0.07621163, -0.11332923, -0.11324614]), 
+ 'split4_test_r2': array([-0.80625985, -0.910231  , -0.65744157, -0.87698071, -0.84914693, 
+        -0.63618698, -0.7911284 , -0.6051059 , -0.68742769, -0.68358576]), 
+ 'mean_test_r2': array([-0.25186374, -0.33064442, -0.14812059, -0.28979345, -0.26147995, 
+        -0.13342303, -0.23975796, -0.11374646, -0.16865382, -0.16467546]), 
+ 'std_test_r2': array([0.28824843, 0.30023961, 0.26394966, 0.30608908, 0.30694659, 
+        0.2614404 , 0.28530074, 0.25763135, 0.26692567, 0.26836796]), 
+ 'rank_test_r2': array([ 7, 10,  3,  9,  8,  2,  6,  1,  5,  4]), 
+  
+splitX_test_r2： 
+- 含义：split0_test_r2、split1_test_r2 等是不同折交叉验证中，在每一折上对测试集计算的 R² 分数。其中的 X 表示折数（从0开始）。 
+- 值：这些数组中的每个值对应于一个超参数组合在该折交叉验证中的 R² 分数。 
+- 解释各个 R² 分数的含义： 
+    - R² 取值大于 0：表示模型能够解释一部分方差，值越接近 1，表示模型拟合得越好。 
+    - R² 取值等于 0：表示模型的预测能力和简单的平均值模型一样。 
+    - R² 取值小于 0：表示模型的表现还不如直接用平均值预测好，这通常意味着模型不适合当前数据。 
+- 在你的结果中，splitX_test_r2 的某些值为负，这意味着在某些折上，模型的预测效果还不如简单地用目标变量的平均值进行预测。这可能表明模型过拟合、欠拟合，或者数据本身具有很高的噪声。 
+ 
+ 
+ 
+ 
+ 
+mean_test_r2： 
+- 含义：这是所有交叉验证折的 R² 分数的平均值。该值通常用于评估每个超参数组合的整体表现。 
+- 值：mean_test_r2 反映了模型在交叉验证过程中总体上的拟合优度。负值表示模型总体上并没有很好地拟合数据。 
+ 
+std_test_r2： 
+- 含义：这是在所有交叉验证折上计算的 R² 分数的标准差，表示该超参数组合在不同交叉验证折之间的表现一致性。较小的标准差表示该超参数组合在不同数据集上表现更一致。 
+- 值：std_test_r2 的值越小，表示模型在不同折上的表现波动越小，模型的稳定性更好。 
+ 
+rank_test_r2： 
+- 含义：这是根据 mean_test_r2 对所有超参数组合进行排序后的排名。1 表示表现最好的参数组合，数字越大表示表现越差。 
+- 值：rank_test_r2 的值用于快速识别最佳的参数组合。排名为 1 的组合是 R² 分数表现最好的组合。 
+ 
+ 'split0_test_mae': array([-0.04200953, -0.04376363, -0.04087904, -0.04236879, -0.04154537, 
+        -0.04079124, -0.04199233, -0.04052508, -0.04124006, -0.04094894]), 
+ 'split1_test_mae': array([-0.04860571, -0.05002574, -0.04522395, -0.04920039, -0.0485336 , 
+        -0.044706  , -0.0482044 , -0.0442033 , -0.04592036, -0.04575566]), 
+ 'split2_test_mae': array([-0.04758374, -0.04798962, -0.04750999, -0.04785285, -0.04759882, 
+        -0.04752959, -0.04740279, -0.04755268, -0.04746269, -0.04753878]), 
+ 'split3_test_mae': array([-0.04633569, -0.04719833, -0.04503293, -0.04680706, -0.04649121, 
+        -0.0448956 , -0.04619349, -0.04473143, -0.04532353, -0.04528548]), 
+ 'split4_test_mae': array([-0.05339434, -0.05427687, -0.05214694, -0.05407761, -0.05390274, 
+        -0.05193531, -0.05329677, -0.05158406, -0.05249817, -0.0524209 ]), 
+ 'mean_test_mae': array([-0.0475858 , -0.04865084, -0.04615857, -0.04806134, -0.04761435, 
+        -0.04597155, -0.04741796, -0.04571931, -0.04648896, -0.04638995]), 
+ 'std_test_mae': array([0.00367252, 0.00346336, 0.0036797 , 0.00378192, 0.00396189, 
+        0.00367665, 0.00363637, 0.00368811, 0.00364119, 0.00371265]), 
+ 'rank_test_mae': array([ 7, 10,  3,  9,  8,  2,  6,  1,  5,  4])} 
+</span><span class="s0">#%% 
+# 获取所有的参数组合列表</span>
+<span class="s2">params_list = bayes_search.cv_results_[</span><span class="s5">'params'</span><span class="s2">]</span>
+<span class="s0">#%% 
+# 所有的参数组合列表</span>
+<span class="s2">params_list</span>
+<span class="s0">#%% 
+# 找到 best_params 对应的索引</span>
+<span class="s2">best_iteration = </span><span class="s1">None</span>
+<span class="s1">for </span><span class="s2">i</span><span class="s3">, </span><span class="s2">params </span><span class="s1">in </span><span class="s2">enumerate(params_list):</span>
+    <span class="s1">if </span><span class="s2">params == best_params:</span>
+        <span class="s2">best_iteration = i</span>
+        <span class="s1">break</span>
+<span class="s0">#%% 
+# best_params 对应的索引</span>
+<span class="s2">best_iteration</span>
+<span class="s0">#%% 
+</span><span class="s1">if </span><span class="s2">best_iteration </span><span class="s1">is not None</span><span class="s2">:</span>
+    <span class="s2">best_mse = -bayes_search.cv_results_[</span><span class="s5">'mean_test_mse'</span><span class="s2">][best_iteration]</span>
+    <span class="s2">best_r2 = bayes_search.cv_results_[</span><span class="s5">'mean_test_r2'</span><span class="s2">][best_iteration]</span>
+    <span class="s2">best_mae = -bayes_search.cv_results_[</span><span class="s5">'mean_test_mae'</span><span class="s2">][best_iteration]</span>
+
+    <span class="s2">print(</span><span class="s5">f&quot;Best MSE: </span><span class="s6">{</span><span class="s2">best_mse</span><span class="s6">}</span><span class="s5">&quot;</span><span class="s2">)</span>
+    <span class="s2">print(</span><span class="s5">f&quot;Best R²: </span><span class="s6">{</span><span class="s2">best_r2</span><span class="s6">}</span><span class="s5">&quot;</span><span class="s2">)</span>
+    <span class="s2">print(</span><span class="s5">f&quot;Best MAE: </span><span class="s6">{</span><span class="s2">best_mae</span><span class="s6">}</span><span class="s5">&quot;</span><span class="s2">)</span>
+<span class="s0">#%% 
+</span><span class="s2">best_result_1 = [{</span>
+    <span class="s5">'mse'</span><span class="s2">: best_mse</span><span class="s3">,</span>
+    <span class="s5">'r2'</span><span class="s2">: best_r2</span><span class="s3">,</span>
+    <span class="s5">'mae'</span><span class="s2">: best_mae</span><span class="s3">,</span>
+<span class="s2">}]</span>
+<span class="s0">#%% 
+</span><span class="s2">best_result_1</span>
+<span class="s0">#%% 
+# 储存每次迭代的评估指标</span>
+<span class="s2">metrics = {</span>
+    <span class="s5">'mse'</span><span class="s2">: -bayes_search.cv_results_[</span><span class="s5">'mean_test_mse'</span><span class="s2">]</span><span class="s3">,</span>
+    <span class="s5">'r2'</span><span class="s2">: bayes_search.cv_results_[</span><span class="s5">'mean_test_r2'</span><span class="s2">]</span><span class="s3">,</span>
+    <span class="s5">'mae'</span><span class="s2">: -bayes_search.cv_results_[</span><span class="s5">'mean_test_mae'</span><span class="s2">]</span><span class="s3">,</span>
+<span class="s2">}</span>
+<span class="s0">#%% 
+</span><span class="s2">metrics</span>
+<span class="s0">#%% 
+# 获取特征重要性</span>
+<span class="s2">importance_matrix[:</span><span class="s3">, </span><span class="s4">0</span><span class="s2">] = bayes_search.best_estimator_.feature_importances_</span>
+<span class="s0">#%% 
+# 获取每次迭代的参数组合</span>
+<span class="s2">params_list = bayes_search.cv_results_[</span><span class="s5">'params'</span><span class="s2">]</span>
+
+<span class="s0"># 打印每次迭代的参数</span>
+<span class="s1">for </span><span class="s2">i</span><span class="s3">, </span><span class="s2">params </span><span class="s1">in </span><span class="s2">enumerate(params_list):</span>
+    <span class="s2">print(</span><span class="s5">f&quot;Iteration </span><span class="s6">{</span><span class="s2">i+</span><span class="s4">1</span><span class="s6">}</span><span class="s5">: </span><span class="s6">{</span><span class="s2">params</span><span class="s6">}</span><span class="s5">&quot;</span><span class="s2">)</span>
+
+<span class="s0">#%% 
+</span><span class="s1">import </span><span class="s2">matplotlib.pyplot </span><span class="s1">as </span><span class="s2">plt</span>
+<span class="s1">import </span><span class="s2">numpy </span><span class="s1">as </span><span class="s2">np</span>
+
+
+<span class="s0"># 1. 绘制数值类型参数的变化曲线</span>
+<span class="s2">iterations = np.arange(</span><span class="s4">1</span><span class="s3">, </span><span class="s2">len(params_list) + </span><span class="s4">1</span><span class="s2">)</span>
+
+<span class="s0">#%% 
+# 提取数值参数</span>
+<span class="s2">max_depth_values = [params[</span><span class="s5">'max_depth'</span><span class="s2">] </span><span class="s1">for </span><span class="s2">params </span><span class="s1">in </span><span class="s2">params_list]</span>
+<span class="s2">min_samples_leaf_values = [params[</span><span class="s5">'min_samples_leaf'</span><span class="s2">] </span><span class="s1">for </span><span class="s2">params </span><span class="s1">in </span><span class="s2">params_list]</span>
+<span class="s2">min_samples_split_values = [params[</span><span class="s5">'min_samples_split'</span><span class="s2">] </span><span class="s1">for </span><span class="s2">params </span><span class="s1">in </span><span class="s2">params_list]</span>
+<span class="s2">n_estimators_values = [params[</span><span class="s5">'n_estimators'</span><span class="s2">] </span><span class="s1">for </span><span class="s2">params </span><span class="s1">in </span><span class="s2">params_list]</span>
+
+<span class="s0">#%% 
+# 绘制数值参数的折线图</span>
+<span class="s2">plt.figure(figsize=(</span><span class="s4">14</span><span class="s3">, </span><span class="s4">8</span><span class="s2">))</span>
+
+<span class="s2">plt.plot(iterations</span><span class="s3">, </span><span class="s2">max_depth_values</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'max_depth'</span><span class="s3">, </span><span class="s2">marker=</span><span class="s5">'o'</span><span class="s2">)</span>
+<span class="s2">plt.plot(iterations</span><span class="s3">, </span><span class="s2">min_samples_leaf_values</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'min_samples_leaf'</span><span class="s3">, </span><span class="s2">marker=</span><span class="s5">'o'</span><span class="s2">)</span>
+<span class="s2">plt.plot(iterations</span><span class="s3">, </span><span class="s2">min_samples_split_values</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'min_samples_split'</span><span class="s3">, </span><span class="s2">marker=</span><span class="s5">'o'</span><span class="s2">)</span>
+<span class="s2">plt.plot(iterations</span><span class="s3">, </span><span class="s2">n_estimators_values</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'n_estimators'</span><span class="s3">, </span><span class="s2">marker=</span><span class="s5">'o'</span><span class="s2">)</span>
+
+<span class="s2">plt.xlabel(</span><span class="s5">'Iteration'</span><span class="s2">)</span>
+<span class="s2">plt.ylabel(</span><span class="s5">'Parameter Value'</span><span class="s2">)</span>
+<span class="s2">plt.title(</span><span class="s5">'Hyperparameter Evolution during Bayes Optimization'</span><span class="s2">)</span>
+<span class="s2">plt.legend()</span>
+<span class="s2">plt.grid(</span><span class="s1">True</span><span class="s2">)</span>
+<span class="s2">plt.show()</span>
+
+<span class="s0">#%% 
+# 2. 绘制mse和mae的柱状图</span>
+<span class="s2">plt.figure(figsize=(</span><span class="s4">14</span><span class="s3">, </span><span class="s4">8</span><span class="s2">))</span>
+
+<span class="s2">bar_width = </span><span class="s4">0.35</span>
+<span class="s2">index = np.arange(len(metrics[</span><span class="s5">'mse'</span><span class="s2">]))</span>
+
+<span class="s2">plt.bar(index</span><span class="s3">, </span><span class="s2">metrics[</span><span class="s5">'mse'</span><span class="s2">]</span><span class="s3">, </span><span class="s2">bar_width</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'MSE'</span><span class="s3">, </span><span class="s2">alpha=</span><span class="s4">0.7</span><span class="s2">)</span>
+<span class="s2">plt.bar(index + bar_width</span><span class="s3">, </span><span class="s2">metrics[</span><span class="s5">'mae'</span><span class="s2">]</span><span class="s3">, </span><span class="s2">bar_width</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'MAE'</span><span class="s3">, </span><span class="s2">alpha=</span><span class="s4">0.7</span><span class="s2">)</span>
+
+<span class="s2">plt.xlabel(</span><span class="s5">'Iteration'</span><span class="s2">)</span>
+<span class="s2">plt.ylabel(</span><span class="s5">'Metric Value'</span><span class="s2">)</span>
+<span class="s2">plt.title(</span><span class="s5">'MSE and MAE during Bayes Optimization'</span><span class="s2">)</span>
+<span class="s2">plt.legend()</span>
+<span class="s2">plt.grid(</span><span class="s1">True</span><span class="s2">)</span>
+<span class="s2">plt.show()</span>
+
+<span class="s0">#%% 
+# 3. 非数值类型参数绘制建议：max_features</span>
+<span class="s0"># 将类别参数转换为数字表示，然后绘制折线图</span>
+
+<span class="s2">max_features_values = [params[</span><span class="s5">'max_features'</span><span class="s2">] </span><span class="s1">for </span><span class="s2">params </span><span class="s1">in </span><span class="s2">params_list]</span>
+<span class="s2">unique_features = list(set(max_features_values))</span>
+<span class="s2">feature_to_num = {feature: idx </span><span class="s1">for </span><span class="s2">idx</span><span class="s3">, </span><span class="s2">feature </span><span class="s1">in </span><span class="s2">enumerate(unique_features)}</span>
+
+<span class="s0"># 将max_features值转换为数字</span>
+<span class="s2">max_features_numeric = [feature_to_num[feature] </span><span class="s1">for </span><span class="s2">feature </span><span class="s1">in </span><span class="s2">max_features_values]</span>
+
+<span class="s0"># 绘制折线图</span>
+<span class="s2">plt.figure(figsize=(</span><span class="s4">14</span><span class="s3">, </span><span class="s4">8</span><span class="s2">))</span>
+
+<span class="s2">plt.plot(iterations</span><span class="s3">, </span><span class="s2">max_features_numeric</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'max_features'</span><span class="s3">, </span><span class="s2">marker=</span><span class="s5">'o'</span><span class="s2">)</span>
+<span class="s2">plt.yticks(list(feature_to_num.values())</span><span class="s3">, </span><span class="s2">list(feature_to_num.keys()))</span>
+
+<span class="s2">plt.xlabel(</span><span class="s5">'Iteration'</span><span class="s2">)</span>
+<span class="s2">plt.ylabel(</span><span class="s5">'max_features'</span><span class="s2">)</span>
+<span class="s2">plt.title(</span><span class="s5">'max_features Evolution during Bayes Optimization'</span><span class="s2">)</span>
+<span class="s2">plt.grid(</span><span class="s1">True</span><span class="s2">)</span>
+<span class="s2">plt.show()</span>
+
+<span class="s0">#%% 
+# 2. 准备非数值类型参数的数据</span>
+<span class="s2">max_features_values = [params[</span><span class="s5">'max_features'</span><span class="s2">] </span><span class="s1">for </span><span class="s2">params </span><span class="s1">in </span><span class="s2">params_list]</span>
+<span class="s2">unique_features = list(set(max_features_values))</span>
+<span class="s2">feature_to_num = {feature: idx </span><span class="s1">for </span><span class="s2">idx</span><span class="s3">, </span><span class="s2">feature </span><span class="s1">in </span><span class="s2">enumerate(unique_features)}</span>
+
+<span class="s0"># 将 max_features 值转换为数字</span>
+<span class="s2">max_features_numeric = [feature_to_num[feature] </span><span class="s1">for </span><span class="s2">feature </span><span class="s1">in </span><span class="s2">max_features_values]</span>
+
+<span class="s0"># 3. 绘制图表</span>
+<span class="s2">fig</span><span class="s3">, </span><span class="s2">axs = plt.subplots(</span><span class="s4">3</span><span class="s3">, </span><span class="s4">1</span><span class="s3">, </span><span class="s2">figsize=(</span><span class="s4">14</span><span class="s3">, </span><span class="s4">18</span><span class="s2">))</span>
+
+<span class="s0"># 绘制数值参数的折线图</span>
+<span class="s2">axs[</span><span class="s4">0</span><span class="s2">].plot(iterations</span><span class="s3">, </span><span class="s2">max_depth_values</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'max_depth'</span><span class="s3">, </span><span class="s2">marker=</span><span class="s5">'o'</span><span class="s2">)</span>
+<span class="s2">axs[</span><span class="s4">0</span><span class="s2">].plot(iterations</span><span class="s3">, </span><span class="s2">min_samples_leaf_values</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'min_samples_leaf'</span><span class="s3">, </span><span class="s2">marker=</span><span class="s5">'o'</span><span class="s2">)</span>
+<span class="s2">axs[</span><span class="s4">0</span><span class="s2">].plot(iterations</span><span class="s3">, </span><span class="s2">min_samples_split_values</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'min_samples_split'</span><span class="s3">, </span><span class="s2">marker=</span><span class="s5">'o'</span><span class="s2">)</span>
+<span class="s2">axs[</span><span class="s4">0</span><span class="s2">].plot(iterations</span><span class="s3">, </span><span class="s2">n_estimators_values</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'n_estimators'</span><span class="s3">, </span><span class="s2">marker=</span><span class="s5">'o'</span><span class="s2">)</span>
+
+<span class="s2">axs[</span><span class="s4">0</span><span class="s2">].set_xlabel(</span><span class="s5">'Iteration'</span><span class="s2">)</span>
+<span class="s2">axs[</span><span class="s4">0</span><span class="s2">].set_ylabel(</span><span class="s5">'Parameter Value'</span><span class="s2">)</span>
+<span class="s2">axs[</span><span class="s4">0</span><span class="s2">].set_title(</span><span class="s5">'Hyperparameter Evolution during Bayes Optimization'</span><span class="s2">)</span>
+<span class="s2">axs[</span><span class="s4">0</span><span class="s2">].legend()</span>
+<span class="s2">axs[</span><span class="s4">0</span><span class="s2">].grid(</span><span class="s1">True</span><span class="s2">)</span>
+
+<span class="s0"># 绘制MSE和MAE的柱状图</span>
+<span class="s2">bar_width = </span><span class="s4">0.35</span>
+<span class="s2">index = np.arange(len(metrics[</span><span class="s5">'mse'</span><span class="s2">]))</span>
+
+<span class="s2">axs[</span><span class="s4">1</span><span class="s2">].bar(index</span><span class="s3">, </span><span class="s2">metrics[</span><span class="s5">'mse'</span><span class="s2">]</span><span class="s3">, </span><span class="s2">bar_width</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'MSE'</span><span class="s3">, </span><span class="s2">alpha=</span><span class="s4">0.7</span><span class="s2">)</span>
+<span class="s2">axs[</span><span class="s4">1</span><span class="s2">].bar(index + bar_width</span><span class="s3">, </span><span class="s2">metrics[</span><span class="s5">'mae'</span><span class="s2">]</span><span class="s3">, </span><span class="s2">bar_width</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'MAE'</span><span class="s3">, </span><span class="s2">alpha=</span><span class="s4">0.7</span><span class="s2">)</span>
+
+<span class="s2">axs[</span><span class="s4">1</span><span class="s2">].set_xlabel(</span><span class="s5">'Iteration'</span><span class="s2">)</span>
+<span class="s2">axs[</span><span class="s4">1</span><span class="s2">].set_ylabel(</span><span class="s5">'Metric Value'</span><span class="s2">)</span>
+<span class="s2">axs[</span><span class="s4">1</span><span class="s2">].set_title(</span><span class="s5">'MSE and MAE during Bayes Optimization'</span><span class="s2">)</span>
+<span class="s2">axs[</span><span class="s4">1</span><span class="s2">].legend()</span>
+<span class="s2">axs[</span><span class="s4">1</span><span class="s2">].grid(</span><span class="s1">True</span><span class="s2">)</span>
+
+<span class="s0"># 绘制非数值类型参数的折线图</span>
+<span class="s2">axs[</span><span class="s4">2</span><span class="s2">].plot(iterations</span><span class="s3">, </span><span class="s2">max_features_numeric</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'max_features'</span><span class="s3">, </span><span class="s2">marker=</span><span class="s5">'o'</span><span class="s2">)</span>
+<span class="s2">axs[</span><span class="s4">2</span><span class="s2">].set_yticks(list(feature_to_num.values()))</span>
+<span class="s2">axs[</span><span class="s4">2</span><span class="s2">].set_yticklabels(list(feature_to_num.keys()))</span>
+
+<span class="s2">axs[</span><span class="s4">2</span><span class="s2">].set_xlabel(</span><span class="s5">'Iteration'</span><span class="s2">)</span>
+<span class="s2">axs[</span><span class="s4">2</span><span class="s2">].set_ylabel(</span><span class="s5">'max_features'</span><span class="s2">)</span>
+<span class="s2">axs[</span><span class="s4">2</span><span class="s2">].set_title(</span><span class="s5">'max_features Evolution during Bayes Optimization'</span><span class="s2">)</span>
+<span class="s2">axs[</span><span class="s4">2</span><span class="s2">].grid(</span><span class="s1">True</span><span class="s2">)</span>
+
+<span class="s0"># 调整布局</span>
+<span class="s2">plt.tight_layout()</span>
+<span class="s2">plt.show()</span>
+
+<span class="s0">#%% 
+# 2. 创建图表</span>
+<span class="s2">fig</span><span class="s3">, </span><span class="s2">ax1 = plt.subplots(figsize=(</span><span class="s4">14</span><span class="s3">, </span><span class="s4">8</span><span class="s2">))</span>
+
+<span class="s0"># 绘制数值参数的折线图（左侧y轴）</span>
+<span class="s2">ax1.plot(iterations</span><span class="s3">, </span><span class="s2">max_depth_values</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'max_depth'</span><span class="s3">, </span><span class="s2">marker=</span><span class="s5">'o'</span><span class="s2">)</span>
+<span class="s2">ax1.plot(iterations</span><span class="s3">, </span><span class="s2">min_samples_leaf_values</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'min_samples_leaf'</span><span class="s3">, </span><span class="s2">marker=</span><span class="s5">'o'</span><span class="s2">)</span>
+<span class="s2">ax1.plot(iterations</span><span class="s3">, </span><span class="s2">min_samples_split_values</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'min_samples_split'</span><span class="s3">, </span><span class="s2">marker=</span><span class="s5">'o'</span><span class="s2">)</span>
+<span class="s2">ax1.plot(iterations</span><span class="s3">, </span><span class="s2">n_estimators_values</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'n_estimators'</span><span class="s3">, </span><span class="s2">marker=</span><span class="s5">'o'</span><span class="s2">)</span>
+
+<span class="s2">ax1.set_xlabel(</span><span class="s5">'Iteration'</span><span class="s2">)</span>
+<span class="s2">ax1.set_ylabel(</span><span class="s5">'Parameter Value'</span><span class="s2">)</span>
+<span class="s2">ax1.set_title(</span><span class="s5">'Hyperparameter Evolution and Metrics during Bayes Optimization'</span><span class="s2">)</span>
+<span class="s2">ax1.legend(loc=</span><span class="s5">'upper left'</span><span class="s2">)</span>
+<span class="s2">ax1.grid(</span><span class="s1">True</span><span class="s2">)</span>
+
+<span class="s0"># 创建右侧的y轴，用于绘制柱状图</span>
+<span class="s2">ax2 = ax1.twinx()</span>
+
+<span class="s0"># 绘制MSE和MAE的柱状图（右侧y轴）</span>
+<span class="s2">bar_width = </span><span class="s4">0.35</span>
+<span class="s2">index = np.arange(len(metrics[</span><span class="s5">'mse'</span><span class="s2">]))</span>
+
+<span class="s2">ax2.bar(index - bar_width/</span><span class="s4">2</span><span class="s3">, </span><span class="s2">metrics[</span><span class="s5">'mse'</span><span class="s2">]</span><span class="s3">, </span><span class="s2">bar_width</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'MSE'</span><span class="s3">, </span><span class="s2">alpha=</span><span class="s4">0.7</span><span class="s2">)</span>
+<span class="s2">ax2.bar(index + bar_width/</span><span class="s4">2</span><span class="s3">, </span><span class="s2">metrics[</span><span class="s5">'mae'</span><span class="s2">]</span><span class="s3">, </span><span class="s2">bar_width</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'MAE'</span><span class="s3">, </span><span class="s2">alpha=</span><span class="s4">0.7</span><span class="s2">)</span>
+
+<span class="s2">ax2.set_ylabel(</span><span class="s5">'Metric Value'</span><span class="s2">)</span>
+<span class="s2">ax2.legend(loc=</span><span class="s5">'upper right'</span><span class="s2">)</span>
+
+<span class="s2">plt.show()</span>
+<span class="s0">#%% 
+# 使用最佳参数进行后续三次训练</span>
+<span class="s1">for </span><span class="s2">i </span><span class="s1">in </span><span class="s2">range(</span><span class="s4">1</span><span class="s3">, </span><span class="s4">4</span><span class="s2">):</span>
+    <span class="s2">print(</span><span class="s5">f&quot;Applying optimized parameters to model </span><span class="s6">{</span><span class="s2">i+</span><span class="s4">1</span><span class="s6">}</span><span class="s5">/4&quot;</span><span class="s2">)</span>
+
+    <span class="s0"># 设置模型参数为最佳参数</span>
+    <span class="s2">model.set_params(**best_params)</span>
+
+    <span class="s0"># 进行模型训练</span>
+    <span class="s2">model.fit(X</span><span class="s3">, </span><span class="s2">Y[:</span><span class="s3">, </span><span class="s2">i])</span>
+
+    <span class="s0"># 进行预测并计算评估指标</span>
+    <span class="s2">y_pred = model.predict(X)</span>
+    <span class="s2">mse = mean_squared_error(Y[:</span><span class="s3">, </span><span class="s2">i]</span><span class="s3">, </span><span class="s2">y_pred)</span>
+    <span class="s2">r2 = r2_score(Y[:</span><span class="s3">, </span><span class="s2">i]</span><span class="s3">, </span><span class="s2">y_pred)</span>
+    <span class="s2">mae = mean_absolute_error(Y[:</span><span class="s3">, </span><span class="s2">i]</span><span class="s3">, </span><span class="s2">y_pred)</span>
+
+    <span class="s0"># 将结果存储</span>
+    <span class="s2">result = {</span>
+        <span class="s5">'mse_scores'</span><span class="s2">: [mse]</span><span class="s3">,</span>
+        <span class="s5">'r2_scores'</span><span class="s2">: [r2]</span><span class="s3">,</span>
+        <span class="s5">'mae_scores'</span><span class="s2">: [mae]</span><span class="s3">,</span>
+    <span class="s2">}</span>
+    <span class="s0"># all_results.append((result, best_params))</span>
+    <span class="s2">best_metrics_results.append(result)</span>
+
+    <span class="s0"># 获取特征重要性</span>
+    <span class="s2">importance_matrix[:</span><span class="s3">, </span><span class="s2">i] = model.feature_importances_</span>
+<span class="s0">#%% 
+</span><span class="s2">best_metrics_results</span>
+<span class="s0">#%% 
+# 1. 拼接数据</span>
+<span class="s2">all_mse_scores = [best_result_1[</span><span class="s4">0</span><span class="s2">][</span><span class="s5">'mse'</span><span class="s2">]] + [result[</span><span class="s5">'mse_scores'</span><span class="s2">][</span><span class="s4">0</span><span class="s2">] </span><span class="s1">for </span><span class="s2">result </span><span class="s1">in </span><span class="s2">best_metrics_results]</span>
+<span class="s2">all_r2_scores = [best_result_1[</span><span class="s4">0</span><span class="s2">][</span><span class="s5">'r2'</span><span class="s2">]] + [result[</span><span class="s5">'r2_scores'</span><span class="s2">][</span><span class="s4">0</span><span class="s2">] </span><span class="s1">for </span><span class="s2">result </span><span class="s1">in </span><span class="s2">best_metrics_results]</span>
+<span class="s2">all_mae_scores = [best_result_1[</span><span class="s4">0</span><span class="s2">][</span><span class="s5">'mae'</span><span class="s2">]] + [result[</span><span class="s5">'mae_scores'</span><span class="s2">][</span><span class="s4">0</span><span class="s2">] </span><span class="s1">for </span><span class="s2">result </span><span class="s1">in </span><span class="s2">best_metrics_results]</span>
+
+<span class="s0">#%% 
+# 2. 绘制图表</span>
+<span class="s2">fig</span><span class="s3">, </span><span class="s2">ax1 = plt.subplots(figsize=(</span><span class="s4">14</span><span class="s3">, </span><span class="s4">8</span><span class="s2">))</span>
+
+<span class="s2">iterations = np.arange(</span><span class="s4">1</span><span class="s3">, </span><span class="s4">5</span><span class="s2">)  </span><span class="s0"># 4个模型的编号</span>
+
+<span class="s0"># 绘制MSE和MAE的柱状图（左侧y轴）</span>
+<span class="s2">bar_width = </span><span class="s4">0.3</span>
+
+<span class="s2">ax1.bar(iterations - bar_width/</span><span class="s4">2</span><span class="s3">, </span><span class="s2">all_mse_scores</span><span class="s3">, </span><span class="s2">bar_width</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'MSE'</span><span class="s3">, </span><span class="s2">alpha=</span><span class="s4">0.7</span><span class="s2">)</span>
+<span class="s2">ax1.bar(iterations + bar_width/</span><span class="s4">2</span><span class="s3">, </span><span class="s2">all_mae_scores</span><span class="s3">, </span><span class="s2">bar_width</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'MAE'</span><span class="s3">, </span><span class="s2">alpha=</span><span class="s4">0.7</span><span class="s2">)</span>
+
+<span class="s2">ax1.set_xlabel(</span><span class="s5">'Model'</span><span class="s2">)</span>
+<span class="s2">ax1.set_ylabel(</span><span class="s5">'Metric Value (MSE/MAE)'</span><span class="s2">)</span>
+<span class="s2">ax1.set_title(</span><span class="s5">'Performance of Four Models'</span><span class="s2">)</span>
+<span class="s2">ax1.legend(loc=</span><span class="s5">'upper left'</span><span class="s2">)</span>
+<span class="s2">ax1.grid(</span><span class="s1">True</span><span class="s2">)</span>
+
+<span class="s0"># 创建右侧的y轴，用于绘制R²的折线图</span>
+<span class="s2">ax2 = ax1.twinx()</span>
+
+<span class="s2">ax2.plot(iterations</span><span class="s3">, </span><span class="s2">all_r2_scores</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'R²'</span><span class="s3">, </span><span class="s2">marker=</span><span class="s5">'o'</span><span class="s3">, </span><span class="s2">color=</span><span class="s5">'green'</span><span class="s2">)</span>
+
+<span class="s2">ax2.set_ylabel(</span><span class="s5">'R² Value'</span><span class="s2">)</span>
+<span class="s2">ax2.legend(loc=</span><span class="s5">'upper right'</span><span class="s2">)</span>
+
+<span class="s2">plt.xticks(iterations</span><span class="s3">, </span><span class="s2">[</span><span class="s5">f'Model </span><span class="s6">{</span><span class="s2">i</span><span class="s6">}</span><span class="s5">' </span><span class="s1">for </span><span class="s2">i </span><span class="s1">in </span><span class="s2">iterations])  </span><span class="s0"># 设置x轴刻度标签为Model 1, Model 2, Model 3, Model 4</span>
+<span class="s2">plt.show()</span>
+<span class="s0">#%% 
+</span><span class="s2">importance_matrix</span>
+<span class="s0">#%% 
+# 将特征重要性结果转化为DataFrame</span>
+<span class="s2">importance_df = pd.DataFrame(importance_matrix</span><span class="s3">,</span>
+                             <span class="s2">columns=[</span><span class="s5">'Dew Point (°C)'</span><span class="s3">, </span><span class="s5">'Air Temperature (°C)'</span><span class="s3">, </span><span class="s5">'Relative Humidity (%)'</span><span class="s3">, </span><span class="s5">'Wind Speed (kn)'</span><span class="s2">]</span><span class="s3">,</span>
+                             <span class="s2">index=[</span><span class="s5">'建筑物高度'</span><span class="s3">, </span><span class="s5">'树冠高度'</span><span class="s3">, </span><span class="s5">'叶面积指数'</span><span class="s3">, </span><span class="s5">'地形数据'</span><span class="s2">])</span>
+
+<span class="s2">print(</span><span class="s5">&quot;Feature Importances:&quot;</span><span class="s2">)</span>
+<span class="s2">importance_df</span>
+<span class="s0">#%% md 
+</span>
+<span class="s0">#%% 
+</span><span class="s1">import </span><span class="s2">matplotlib.pyplot </span><span class="s1">as </span><span class="s2">plt</span>
+<span class="s1">import </span><span class="s2">numpy </span><span class="s1">as </span><span class="s2">np</span>
+
+<span class="s0"># 从 cv_results_ 中获取参数变化和评估指标</span>
+<span class="s2">n_estimators_values = [params[</span><span class="s5">'n_estimators'</span><span class="s2">] </span><span class="s1">for </span><span class="s2">params </span><span class="s1">in </span><span class="s2">bayes_search.cv_results_[</span><span class="s5">'params'</span><span class="s2">]]</span>
+<span class="s2">max_depth_values = [params[</span><span class="s5">'max_depth'</span><span class="s2">] </span><span class="s1">for </span><span class="s2">params </span><span class="s1">in </span><span class="s2">bayes_search.cv_results_[</span><span class="s5">'params'</span><span class="s2">]]</span>
+<span class="s2">mean_test_mse = -bayes_search.cv_results_[</span><span class="s5">'mean_test_mse'</span><span class="s2">]</span>
+<span class="s2">mean_test_r2 = bayes_search.cv_results_[</span><span class="s5">'mean_test_r2'</span><span class="s2">]</span>
+<span class="s2">mean_test_mae = -bayes_search.cv_results_[</span><span class="s5">'mean_test_mae'</span><span class="s2">]</span>
+
+<span class="s0"># 创建图形对象和子图</span>
+<span class="s2">fig</span><span class="s3">, </span><span class="s2">ax1 = plt.subplots(figsize=(</span><span class="s4">12</span><span class="s3">, </span><span class="s4">8</span><span class="s2">))</span>
+
+<span class="s0"># 绘制折线图：参数在每次迭代中的变化</span>
+<span class="s2">ax1.plot(range(len(n_estimators_values))</span><span class="s3">, </span><span class="s2">n_estimators_values</span><span class="s3">, </span><span class="s2">color=</span><span class="s5">'red'</span><span class="s3">, </span><span class="s2">marker=</span><span class="s5">'o'</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'n_estimators'</span><span class="s2">)</span>
+<span class="s2">ax1.plot(range(len(max_depth_values))</span><span class="s3">, </span><span class="s2">max_depth_values</span><span class="s3">, </span><span class="s2">color=</span><span class="s5">'blue'</span><span class="s3">, </span><span class="s2">marker=</span><span class="s5">'o'</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'max_depth'</span><span class="s2">)</span>
+<span class="s2">ax1.plot(range(len(</span>
+
+
+<span class="s0"># 添加折线图的标题和标签</span>
+<span class="s2">ax1.set_xlabel(</span><span class="s5">'Iteration'</span><span class="s2">)</span>
+<span class="s2">ax1.set_ylabel(</span><span class="s5">'Hyperparameter Value'</span><span class="s2">)</span>
+<span class="s2">ax1.set_title(</span><span class="s5">'Bayes Optimization: Hyperparameters Evolution and Metrics'</span><span class="s2">)</span>
+<span class="s2">ax1.legend(loc=</span><span class="s5">'upper left'</span><span class="s2">)</span>
+
+<span class="s0"># 创建第二个 y 轴用于绘制评估指标的柱状图</span>
+<span class="s2">ax2 = ax1.twinx()</span>
+
+<span class="s0"># 绘制柱状图：评估指标的值</span>
+<span class="s2">width = </span><span class="s4">0.2</span>
+<span class="s2">x = np.arange(len(mean_test_mse))</span>
+
+<span class="s2">ax2.bar(x - width</span><span class="s3">, </span><span class="s2">mean_test_mse</span><span class="s3">, </span><span class="s2">width=width</span><span class="s3">, </span><span class="s2">color=</span><span class="s5">'green'</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'MSE'</span><span class="s2">)</span>
+<span class="s2">ax2.bar(x</span><span class="s3">, </span><span class="s2">mean_test_r2</span><span class="s3">, </span><span class="s2">width=width</span><span class="s3">, </span><span class="s2">color=</span><span class="s5">'purple'</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'R²'</span><span class="s2">)</span>
+<span class="s2">ax2.bar(x + width</span><span class="s3">, </span><span class="s2">mean_test_mae</span><span class="s3">, </span><span class="s2">width=width</span><span class="s3">, </span><span class="s2">color=</span><span class="s5">'orange'</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">'MAE'</span><span class="s2">)</span>
+
+<span class="s0"># 添加柱状图的标签</span>
+<span class="s2">ax2.set_ylabel(</span><span class="s5">'Metric Value'</span><span class="s2">)</span>
+<span class="s2">ax2.legend(loc=</span><span class="s5">'upper right'</span><span class="s2">)</span>
+
+<span class="s0"># 显示图表</span>
+<span class="s2">plt.show()</span>
+
+<span class="s0">#%% 
+# %%time</span>
+<span class="s0"># </span>
+<span class="s0"># # 训练四次模型，每次都使用贝叶斯优化</span>
+<span class="s0"># all_results = []  # 用于存储所有结果</span>
+<span class="s0"># # 开始针对 Y 的四次训练</span>
+<span class="s0"># for i in range(4):</span>
+<span class="s0">#     print(f&quot;Optimizing model {i+1}/4&quot;)</span>
+<span class="s0"># </span>
+<span class="s0">#     # 在新一轮循环开始前，确保关闭和清理之前的进度条</span>
+<span class="s0">#     if 'progress_callback' in locals():</span>
+<span class="s0">#         progress_callback.close()</span>
+<span class="s0">#         del progress_callback</span>
+<span class="s0"># </span>
+<span class="s0">#     # 实例化进度条回调函数</span>
+<span class="s0">#     progress_callback = TqdmProgressCallback(total_iterations=n_iter, model_idx=i)</span>
+<span class="s0">#     </span>
+<span class="s0">#     # 开始贝叶斯优化</span>
+<span class="s0">#     print('----------start fit----------')</span>
+<span class="s0">#     bayes_search.fit(X, Y[:, i], callback=[progress_callback])</span>
+<span class="s0">#     print('----------end fit----------')</span>
+<span class="s0"># </span>
+<span class="s0">#     # 显式关闭进度条</span>
+<span class="s0">#     progress_callback.close()</span>
+<span class="s0"># </span>
+<span class="s0">#     # 直接从 cv_results_ 中提取每次迭代的评估指标</span>
+<span class="s0">#     mae_scores = -bayes_search.cv_results_['mean_test_mae']  # 负号是因为贝叶斯优化会尝试最小化评分，但我们想要最大化评分，在优化中实际使用的是neg_mean_squared_error</span>
+<span class="s0">#     r2_scores = -bayes_search.cv_results_['mean_test_r2']</span>
+<span class="s0">#     mse_scores = bayes_search.cv_results_['mean_test_mse']</span>
+<span class="s0"># </span>
+<span class="s0">#     # 将结果存储</span>
+<span class="s0">#     result = {</span>
+<span class="s0">#         'mse_scores': mse_scores,</span>
+<span class="s0">#         'r2_scores': r2_scores,</span>
+<span class="s0">#         'mae_scores': mae_scores,</span>
+<span class="s0">#     }</span>
+<span class="s0">#     all_results.append((result, bayes_search.best_params_))</span>
+<span class="s0"># </span>
+<span class="s0">#     # 获取特征重要性</span>
+<span class="s0">#     importance_matrix[:, i] = bayes_search.best_estimator_.feature_importances_</span>
+<span class="s0"># </span>
+<span class="s0"># # 打印或保存结果</span>
+<span class="s0"># all_results</span>
+<span class="s0"># importance_matrix</span>
+<span class="s0">#%% 
+</span><span class="s1">import </span><span class="s2">matplotlib.pyplot </span><span class="s1">as </span><span class="s2">plt</span>
+
+<span class="s0"># 定义要绘制的超参数名称</span>
+<span class="s2">param_names = list(search_space.keys())</span>
+<span class="s2">colors = [</span><span class="s5">'r'</span><span class="s3">, </span><span class="s5">'g'</span><span class="s3">, </span><span class="s5">'b'</span><span class="s3">, </span><span class="s5">'m'</span><span class="s2">]  </span><span class="s0"># 4个模型的颜色</span>
+
+<span class="s0"># 遍历每个超参数</span>
+<span class="s1">for </span><span class="s2">param_name </span><span class="s1">in </span><span class="s2">param_names:</span>
+    <span class="s2">plt.figure(figsize=(</span><span class="s4">10</span><span class="s3">, </span><span class="s4">6</span><span class="s2">))</span>
+
+    <span class="s0"># 对于每个模型，获取其参数历史，并绘制在同一张图上</span>
+    <span class="s1">for </span><span class="s2">i </span><span class="s1">in </span><span class="s2">range(</span><span class="s4">4</span><span class="s2">):</span>
+        <span class="s0"># 获取当前模型对应的参数历史</span>
+        <span class="s2">params_history = []</span>
+        <span class="s1">for </span><span class="s2">best_index </span><span class="s1">in </span><span class="s2">range(len(all_results[i][</span><span class="s4">0</span><span class="s2">][</span><span class="s5">'mse_scores'</span><span class="s2">])):</span>
+            <span class="s2">params_history.append(bayes_search.cv_results_[</span><span class="s5">'params'</span><span class="s2">][best_index])</span>
+
+        <span class="s2">param_values = [params[param_name] </span><span class="s1">for </span><span class="s2">params </span><span class="s1">in </span><span class="s2">params_history]</span>
+
+        <span class="s1">if </span><span class="s2">isinstance(search_space[param_name]</span><span class="s3">, </span><span class="s2">Categorical):</span>
+            <span class="s0"># 如果超参数是类别类型，绘制类别标签</span>
+            <span class="s2">unique_categories = list(set(param_values))</span>
+            <span class="s2">category_to_num = {category: num </span><span class="s1">for </span><span class="s2">num</span><span class="s3">, </span><span class="s2">category </span><span class="s1">in </span><span class="s2">enumerate(unique_categories)}</span>
+            <span class="s2">num_values = [category_to_num[val] </span><span class="s1">for </span><span class="s2">val </span><span class="s1">in </span><span class="s2">param_values]</span>
+            <span class="s2">plt.plot(range(len(num_values))</span><span class="s3">, </span><span class="s2">num_values</span><span class="s3">, </span><span class="s2">marker=</span><span class="s5">'o'</span><span class="s3">, </span><span class="s2">color=colors[i]</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">f'Model </span><span class="s6">{</span><span class="s2">i+</span><span class="s4">1</span><span class="s6">}</span><span class="s5">'</span><span class="s2">)</span>
+            <span class="s2">plt.yticks(list(category_to_num.values())</span><span class="s3">, </span><span class="s2">list(category_to_num.keys()))</span>
+        <span class="s1">else</span><span class="s2">:</span>
+            <span class="s0"># 如果是数值类型，直接绘制</span>
+            <span class="s2">plt.plot(range(len(param_values))</span><span class="s3">, </span><span class="s2">param_values</span><span class="s3">, </span><span class="s2">marker=</span><span class="s5">'o'</span><span class="s3">, </span><span class="s2">color=colors[i]</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">f'Model </span><span class="s6">{</span><span class="s2">i+</span><span class="s4">1</span><span class="s6">}</span><span class="s5">'</span><span class="s2">)</span>
+
+    <span class="s2">plt.title(</span><span class="s5">f'</span><span class="s6">{</span><span class="s2">param_name</span><span class="s6">} </span><span class="s5">evolution during Bayes Optimization'</span><span class="s2">)</span>
+    <span class="s2">plt.xlabel(</span><span class="s5">'Iteration'</span><span class="s2">)</span>
+    <span class="s2">plt.ylabel(param_name)</span>
+    <span class="s2">plt.legend()  </span><span class="s0"># 显示图例</span>
+    <span class="s2">plt.grid(</span><span class="s1">True</span><span class="s2">)</span>
+    <span class="s2">plt.show()</span>
+
+<span class="s0">#%% 
+</span><span class="s1">import </span><span class="s2">matplotlib.pyplot </span><span class="s1">as </span><span class="s2">plt</span>
+
+<span class="s0"># 定义评估指标和对应的键</span>
+<span class="s2">metrics = [</span><span class="s5">'MSE'</span><span class="s3">, </span><span class="s5">'R²'</span><span class="s3">, </span><span class="s5">'MAE'</span><span class="s2">]</span>
+<span class="s2">metric_keys = [</span><span class="s5">'mse_scores'</span><span class="s3">, </span><span class="s5">'r2_scores'</span><span class="s3">, </span><span class="s5">'mae_scores'</span><span class="s2">]</span>
+
+<span class="s0"># 创建一个包含多个子图的图表</span>
+<span class="s2">fig</span><span class="s3">, </span><span class="s2">axs = plt.subplots(len(metrics)</span><span class="s3">, </span><span class="s4">1</span><span class="s3">, </span><span class="s2">figsize=(</span><span class="s4">14</span><span class="s3">, </span><span class="s4">8 </span><span class="s2">* len(metrics)))</span>
+
+<span class="s0"># 遍历每个评估指标并绘制子图</span>
+<span class="s1">for </span><span class="s2">idx</span><span class="s3">, </span><span class="s2">(metric_name</span><span class="s3">, </span><span class="s2">metric_key) </span><span class="s1">in </span><span class="s2">enumerate(zip(metrics</span><span class="s3">, </span><span class="s2">metric_keys)):</span>
+    <span class="s1">for </span><span class="s2">i</span><span class="s3">, </span><span class="s2">(result</span><span class="s3">, </span><span class="s2">_) </span><span class="s1">in </span><span class="s2">enumerate(all_results):</span>
+        <span class="s2">axs[idx].plot(range(len(result[metric_key]))</span><span class="s3">, </span><span class="s2">result[metric_key]</span><span class="s3">, </span><span class="s2">label=</span><span class="s5">f'Model </span><span class="s6">{</span><span class="s2">i+</span><span class="s4">1</span><span class="s6">}</span><span class="s5">'</span><span class="s3">, </span><span class="s2">marker=</span><span class="s5">'o'</span><span class="s2">)</span>
+
+    <span class="s2">axs[idx].set_title(</span><span class="s5">f'</span><span class="s6">{</span><span class="s2">metric_name</span><span class="s6">} </span><span class="s5">evolution during Bayes Optimization'</span><span class="s2">)</span>
+    <span class="s2">axs[idx].set_xlabel(</span><span class="s5">'Iteration'</span><span class="s2">)</span>
+    <span class="s2">axs[idx].set_ylabel(metric_name)</span>
+    <span class="s2">axs[idx].legend()</span>
+    <span class="s2">axs[idx].grid(</span><span class="s1">True</span><span class="s2">)</span>
+
+<span class="s0"># 自动调整子图布局，避免重叠</span>
+<span class="s2">plt.tight_layout()</span>
+
+<span class="s0"># 显示图表</span>
+<span class="s2">plt.show()</span>
+
+<span class="s0">#%% 
+# 初始化用于存储参数和评估指标的列表</span>
+<span class="s2">params_list = []</span>
+<span class="s2">metrics_list = []</span>
+
+<span class="s0"># 遍历每个模型的结果</span>
+<span class="s1">for </span><span class="s2">i</span><span class="s3">, </span><span class="s2">(result</span><span class="s3">, </span><span class="s2">best_params) </span><span class="s1">in </span><span class="s2">enumerate(all_results):</span>
+    <span class="s0"># 将最佳参数保存到 params_list 中</span>
+    <span class="s2">best_params[</span><span class="s5">'Model'</span><span class="s2">] = </span><span class="s5">f'Model </span><span class="s6">{</span><span class="s2">i+</span><span class="s4">1</span><span class="s6">}</span><span class="s5">'</span>
+    <span class="s2">params_list.append(best_params)</span>
+
+    <span class="s0"># 将最终的评估指标保存到 metrics_list 中</span>
+    <span class="s2">metrics = {</span>
+        <span class="s5">'Model'</span><span class="s2">: </span><span class="s5">f'Model </span><span class="s6">{</span><span class="s2">i+</span><span class="s4">1</span><span class="s6">}</span><span class="s5">'</span><span class="s3">,</span>
+        <span class="s5">'MSE'</span><span class="s2">: result[</span><span class="s5">'mse_scores'</span><span class="s2">][-</span><span class="s4">1</span><span class="s2">]</span><span class="s3">,</span>
+        <span class="s5">'R²'</span><span class="s2">: result[</span><span class="s5">'r2_scores'</span><span class="s2">][-</span><span class="s4">1</span><span class="s2">]</span><span class="s3">,</span>
+        <span class="s5">'MAE'</span><span class="s2">: result[</span><span class="s5">'mae_scores'</span><span class="s2">][-</span><span class="s4">1</span><span class="s2">]</span><span class="s3">,</span>
+    <span class="s2">}</span>
+    <span class="s2">metrics_list.append(metrics)</span>
+
+<span class="s0"># 将参数和评估指标分别转换为 DataFrame</span>
+<span class="s2">params_df = pd.DataFrame(params_list)</span>
+<span class="s2">metrics_df = pd.DataFrame(metrics_list)</span>
+<span class="s0">#%% 
+</span><span class="s2">params_df</span>
+<span class="s0">#%% 
+</span><span class="s2">metrics_df</span>
+<span class="s0">#%% 
+</span>
+<span class="s0">#%% 
+</span><span class="s2">%%time</span>
+<span class="s0"># 开始针对 Y 的四次训练</span>
+<span class="s1">for </span><span class="s2">i </span><span class="s1">in </span><span class="s2">range(</span><span class="s4">4</span><span class="s2">):</span>
+    <span class="s2">print(</span><span class="s5">f&quot;Optimizing model </span><span class="s6">{</span><span class="s2">i+</span><span class="s4">1</span><span class="s6">}</span><span class="s5">/4&quot;</span><span class="s2">)</span>
+
+    <span class="s0"># 在新一轮循环开始前，确保关闭和清理之前的进度条</span>
+    <span class="s1">if </span><span class="s5">'progress_callback' </span><span class="s1">in </span><span class="s2">locals():</span>
+        <span class="s2">progress_callback.close()</span>
+        <span class="s1">del </span><span class="s2">progress_callback</span>
+
+    <span class="s0"># 实例化进度条回调函数</span>
+    <span class="s0"># progress_callback = TqdmProgressCallback(total_iterations=n_iter, model_idx=i)</span>
+    <span class="s2">progress_callback = TqdmTimeProgressCallback(total_iterations=n_iter</span><span class="s3">, </span><span class="s2">model_idx=i)</span>
+
+    <span class="s0"># 开始贝叶斯优化</span>
+    <span class="s2">print(</span><span class="s5">'----------start fit----------'</span><span class="s2">)</span>
+    <span class="s2">bayes_search.fit(X</span><span class="s3">, </span><span class="s2">Y[:</span><span class="s3">, </span><span class="s2">i]</span><span class="s3">, </span><span class="s2">callback=[progress_callback])</span>
+    <span class="s2">print(</span><span class="s5">'----------end fit----------'</span><span class="s2">)</span>
+
+    <span class="s0"># 显式关闭进度条</span>
+    <span class="s2">progress_callback.close()</span>
+
+    <span class="s0"># 直接从 cv_results_ 中提取每次迭代的评估指标</span>
+    <span class="s2">mae_scores = -bayes_search.cv_results_[</span><span class="s5">'mean_test_mae'</span><span class="s2">]  </span><span class="s0"># 负号是因为贝叶斯优化会尝试最小化评分，但我们想要最大化评分，在优化中实际使用的是neg_mean_squared_error</span>
+    <span class="s2">r2_scores = -bayes_search.cv_results_[</span><span class="s5">'mean_test_r2'</span><span class="s2">]</span>
+    <span class="s2">mse_scores = bayes_search.cv_results_[</span><span class="s5">'mean_test_mse'</span><span class="s2">]</span>
+
+    <span class="s0"># 将结果存储</span>
+    <span class="s2">result = {</span>
+        <span class="s5">'mse_scores'</span><span class="s2">: mse_scores</span><span class="s3">,</span>
+        <span class="s5">'r2_scores'</span><span class="s2">: r2_scores</span><span class="s3">,</span>
+        <span class="s5">'mae_scores'</span><span class="s2">: mae_scores</span><span class="s3">,</span>
+    <span class="s2">}</span>
+    <span class="s2">all_results.append((result</span><span class="s3">, </span><span class="s2">bayes_search.best_params_))</span>
+
+    <span class="s0"># 获取特征重要性</span>
+    <span class="s2">importance_matrix[:</span><span class="s3">, </span><span class="s2">i] = bayes_search.best_estimator_.feature_importances_</span>
+
+<span class="s0"># 打印或保存结果</span>
+</pre>
+</body>
+</html>
